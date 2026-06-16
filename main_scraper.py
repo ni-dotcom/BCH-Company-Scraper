@@ -123,43 +123,42 @@ df["Scraped_Text"] = df["Website"].apply(scrape_relevant_sections)
 
 # General keyword-category map (excluding therapies)
 category_keyword_map = {
-    "Allergy" : ["Allergy", "Allergies"],
-    "Anesthesia": ["Anesthesia", "Anesthetics", "Anesthesiology"],
-    "Autoimmune": ["autoimmune", "inflammation", "lupus", "rheumatoid","AIDS/HIV"],
-    "Cardiology": ["cardiology", "heart", "cardiac", "arrhythmia"],
-    "Cardiovascular": ["Cardiovascular","vascular"],
-    "Dermatology": ["dermatology", "skin", "eczema", "psoriasis"],
-    "Endocrinology": ["Endocrine", "Endocrinology"],
-    "Fetal/Newborn Medicine": ["Newborn", "Newborns", "Fetus", "Fetal"],
-    "Gastroenterology": ["Gastroenterology", "Gastrointestinal"],
-    "Hematology": ["Hematology"],
-    "Immunology": ["Immunology", "Immune System"],
-    "Infectious Disease": ["infectious", "viral", "bacterial", "covid", "sars-cov-2"],
-    "Metabolic": ["metabolic", "obesity", "diabetes", "insulin", "glucose"],
-    "Nephrology": ["Nephrology","Kidney"],
-    "Neurology": ["neurology", "brain", "neuron", "epilepsy", "alzheimer", "parkinsons", "Epilepsy","psychiatry","depression", "anxiety", "mental health"],
-    "Psychiatry": ["psychiatry", "depression", "anxiety", "mental health"],
-    "Neuroscience": ["Neuroscience"],
-    "Obesity": ["Obesity", "Weight Loss", "Weight Management"],
-    "Oncology": ["oncology", "cancer", "tumor", "carcinoma"],
-    "Opthamology": ["Opthamology"],
-    "Orthopedics": ["Orthopedic"],
-    "Pulmonary": ["pulmonary", "respiratory", "lung"],
-    "Rare Diseases": ["rare disease", "orphan", "ultra-rare"],
-    "Reproductive Health": ["Reproductive Health", "Prenatal Care", "Feminine Health", "Women Health"],
-    "Surgery": ["Surgery", "Surgical"],
-    "Transplant":["Transplant"],
-    "Urology": ["Urology"],
+    "Allergy" : ["Allergy", "Allergies", "allergen", "IgE", "anaphylaxis", "urticaria", "hives", "epinephrine auto-injector", "allergic"],
+    "Anesthesia": ["Anesthesia", "Anesthetics", "Anesthesiology", "intubation", "analgesia", "sedation", "ASA classification", "perioperative", "PACU"],
+    "Autoimmune": ["autoimmune", "lupus", "rheumatoid","AIDS/HIV", "autoantibodies", "multiple sclerosis", "type 1 diabetes", "immunosuppression"],
+    "Cardiology": ["cardiology", "heart", "cardiac", "arrhythmia", "CHD", "echocardiogram", "ECG/EKG", "pacemaker", "cardiomyopathy" ,"electrophysiology"],
+    "Cardiovascular": ["Cardiovascular","vascular", "hypertension", "atherosclerosis", "stroke", "myocardial ischemia"],
+    "Dermatology": ["dermatology", "skin", "eczema", "psoriasis", "acne", "dermatitis", "pruritus", "skin biopsy"],
+    "Endocrinology": ["Endocrine", "Endocrinology", "adrenal", "thyroid", "hormones"],
+    "Fetal/Newborn Medicine": ["Newborn", "Newborns", "Fetus", "Fetal", "neonatology", "prenatal diagnosis", "congentital"],
+    "Gastroenterology": ["Gastroenterology", "Gastrointestinal", "celiac", "endoscopy", "Crohn's", "pancreatitis", "colonscopy"],
+    "Hematology": ["Hematology", "anemia", "sickle cell", "hemophilia", "bone marrow", "coagulation", "thrombocytopenia"],
+    "Immunology": ["Immunology", "Immune System", "immunoglobulins", "immune deficiency", "lymphocytes", "cytokines"],
+    "Infectious Disease": ["infectious", "viral", "bacterial", "covid", "sars-cov-2", "antivirals", "sepsis", "vaccination"],
+    "Metabolic": ["metabolic", "obesity", "diabetes", "insulin", "glucose", "hypoglysemia", "hyperammonemia"],
+    "Nephrology": ["Nephrology","Kidney", "proteinuria", "hematuria", "nephrotic syndrome", "hypertension"],
+    "Neurology": ["neurology", "brain", "neuron", "epilepsy", "alzheimer", "parkinsons", "Epilepsy","psychiatry","depression", "anxiety", "mental health", "seizures", "stroke", "neuropathy", "neuroimaging", "neuromuscular"],
+    "Psychiatry": ["psychiatry", "depression", "anxiety", "mental health", "ADHD", "PTSD", "psychosis", "psychopharmacology"],
+    "Neuroscience": ["Neuroscience", "brain circuit", "cognition", "neurodevelopment", "neuroplasticity", "neurogenetics"],
+    "Obesity": ["Obesity", "Weight Loss", "Weight Management", "metabolic syndrome", "insulin resistance", "fatty liver"],
+    "Oncology": ["oncology", "cancer", "tumor", "carcinoma", "chemotherapy", "immunotherapy", "leukemia", "lymphoma"],
+    "Opthamology": ["Opthamology", "amblyopia", "strabismus", "glaucoma", "retina", "cornea", "fundus exam", "eye trauma"],
+    "Orthopedics": ["Orthopedic", "sports injury", "ligament/ACL", "joint pain", "hip dysplasia", "physical therapy"],
+    "Pulmonary": ["pulmonary", "respiratory", "lung", "asthma", "COPD", "cystic fibrosis", "pneumonia", "bronchiolitis"],
+    "Rare Diseases": ["rare disease", "orphan", "ultra-rare", "diagnostic odyssey"],
+    "Reproductive Health": ["Reproductive Health", "Prenatal Care", "Feminine Health", "Women Health", "sexual health", "PCOS", "STI screening"],
+    "Surgery": ["Surgery", "Surgical", "laparoscopic"],
+    "Transplant":["Transplant", "organ allocation", "HLA matching"],
+    "Urology": ["Urology", "UTI", "hematuria", "kidney stones", "urodynamics"],
 
 
-    "Biomarkers": ["Biomarkers"],
-    "Diagnostics": ["diagnostic", "diagnostics", "monitoring"],
-    "Educational/Training Materials": ["Educational Materials", "Training Materials", "Training and Education"],
-    "Medical Devices": ["Medical Devices", "Devices", "Medical Technology", "Instruments","implant", "sensor"],
-    "Medical Equipment": ["Medical Equipment", "equipment"],
-    "Novel Targets" : ["Novel Targets"],
-    "Research Tools" : ["Research Tools", "Helping Researchers", "Tools for Researchers"],
-    "Animal Models": ["animal models"],
+    "Biomarkers": ["Biomarkers", "surrogate endpoint", "ROC/AUC"],
+    "Diagnostics": ["diagnostic", "diagnostics", "monitoring", "lab-developed test", "clinical ulity"],
+    "Educational/Training Materials": ["Educational Materials", "Training Materials", "Training and Education", "instructional design", "curriculum"],
+    "Medical Devices": ["Medical Devices", "Devices", "Medical Technology", "Instruments","implant", "sensor", "FDA 510(k)", "PMA"],
+    "Medical Equipment": ["Medical Equipment", "equipment", "electrical safety"],
+    "Research Tools" : ["Research Tools", "Helping Researchers", "Tools for Researchers", "automation", "reagents"],
+    "Animal Models": ["animal models", "mouse model", "transgenic", "xenograft"],
     "Antibody": ["antibody", "monoclonal"],
     "Antigen": ["Antigen"],
     "Assay": ["Assay"],
@@ -169,8 +168,6 @@ category_keyword_map = {
     "Protein (Research Tool)": ["protein", "proteins"],
     "Software": ["software", "algorithm"],
     "Imaging Software": ["imaging", "imaging software", "radiology"],
-    "Technology Platform/Enabling Technology": ["Technology Platform", "platform", "Enabling Technology", "Epic"],
-    "Therapeutics" : ["Therapeutics", "Therapeutics Solutions", "Therapies", "Therapy"],
 }
 # Specific types of therapy
 therapy_subtypes = {
@@ -220,8 +217,12 @@ def match_keywords(text, general_map, therapy_map):
         found_subtypes = [subcat for kw, subcat in therapy_map.items() if kw in text]
         if found_subtypes:
             matched.update(found_subtypes)
-        else:
-            matched.add("Therapeutics")  # fallback if no subtype found
+        # else:
+        #    matched.add("Therapeutics")  # fallback if no subtype found
+    
+    # companies that trigger both cancer and infectious diseases should just be oncology
+    if "Oncology" in matched and "Infectious Disease" in matched:
+      matched.remove("Infectious Disease")
 
     # instead of returning nan, maybe reiterate functions with new params
     # return ", ".join(sorted(matched)) if matched else np.nan
