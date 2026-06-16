@@ -43,9 +43,9 @@ def clean_and_validate_url(url):
             return np.nan
     return url
 
-# df["Website"] = df["Website"].apply(clean_and_validate_url)
+df["Website"] = df["Website"].apply(clean_and_validate_url)
 # Drop rows where 'Website' became NaN after validation
-# df.dropna(subset=["Website"], inplace=True)
+df.dropna(subset=["Website"], inplace=True)
 
 # Clean text function
 def clean_text(text):
