@@ -64,6 +64,9 @@ def scrape_relevant_sections(url, selenium_driver=None):
         response = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(response.text, 'html.parser')
 
+        for tag in soup(["script", "style", "noscript", "nav", "footer"]):   # don't classify junk page content
+          tag.decompose()
+
         keywords = ["about", "product", "pipeline", "technology", "mission", "vision", "platform", "solution"]
         relevant_texts = [] # List to store individual text sections
         keyword_match_found = False # Flag to track if any keyword sections were found
@@ -73,12 +76,11 @@ def scrape_relevant_sections(url, selenium_driver=None):
             tag_text = tag.get_text(strip=True).lower() # extracts visible text content from each tag and cleans
             if any(kw in tag_text for kw in keywords):
                 parent = tag.find_parent()
-                if parent and parent.name not in ["nav", "footer", "header"]: # excludes text from website's nav menu
-                    section_text = parent.get_text(separator=' ', strip=True) # text from different child tags are joined with space, and whitespace cleaned
-                    section_text_processed = re.sub(r'\s+', ' ', section_text).lower().strip()
-                    if len(section_text_processed) > 50:  # more than 50 char
-                        relevant_texts.append(section_text_processed)
-                        keyword_match_found = True
+                section_text = parent.get_text(separator=' ', strip=True) # text from different child tags are joined with space, and whitespace cleaned
+                section_text_processed = re.sub(r'\s+', ' ', section_text).lower().strip()
+                if len(section_text_processed) > 50:  # more than 50 char
+                    relevant_texts.append(section_text_processed)
+                    keyword_match_found = True
 
         # Fallback 1: If no important sections are matched by keywords, use longer p tags
         if not keyword_match_found:
@@ -106,6 +108,9 @@ def scrape_relevant_sections(url, selenium_driver=None):
                        long_div_texts.append(div_text_processed)
                 relevant_texts.extend(long_div_texts)
 
+        # De-duplicate repeated sections
+        relevant_texts = list(dict.fromkeys(relevant_texts))
+
         # Construct the combined string, joining with newlines
         combined_string = "\n".join(relevant_texts)
 
@@ -123,19 +128,19 @@ df["Scraped_Text"] = df["Website"].apply(scrape_relevant_sections)
 
 # General keyword-category map (excluding therapies)
 category_keyword_map = {
-    "Allergy" : ["Allergy", "Allergies", "allergen", "IgE", "anaphylaxis", "urticaria", "hives", "epinephrine auto-injector", "allergic"],
-    "Anesthesia": ["Anesthesia", "Anesthetics", "Anesthesiology", "intubation", "analgesia", "sedation", "ASA classification", "perioperative", "PACU"],
+    "Allergy" : ["Allergy", "Allergies", "allergen", " IgE ", "anaphylaxis", "urticaria", "hives", "epinephrine auto-injector", "allergic"],
+    "Anesthesia": ["Anesthesia", "Anesthetics", "Anesthesiology", "intubation", "analgesia", "sedation", "ASA classification", "perioperative", " PACU "],
     "Autoimmune": ["autoimmune", "lupus", "rheumatoid","AIDS/HIV", "autoantibodies", "multiple sclerosis", "type 1 diabetes", "immunosuppression"],
-    "Cardiology": ["cardiology", "heart", "cardiac", "arrhythmia", "CHD", "echocardiogram", "ECG/EKG", "pacemaker", "cardiomyopathy" ,"electrophysiology"],
+    "Cardiology": ["cardiology", "heart", "cardiac", "arrhythmia", " CHD ", "echocardiogram", "ECG/EKG", "pacemaker", "cardiomyopathy" ,"electrophysiology"],
     "Cardiovascular": ["Cardiovascular","vascular", "hypertension", "atherosclerosis", "stroke", "myocardial ischemia"],
     "Dermatology": ["dermatology", "skin", "eczema", "psoriasis", "acne", "dermatitis", "pruritus", "skin biopsy"],
     "Endocrinology": ["Endocrine", "Endocrinology", "adrenal", "thyroid", "hormones"],
-    "Fetal/Newborn Medicine": ["Newborn", "Newborns", "Fetus", "Fetal", "neonatology", "prenatal diagnosis", "congentital"],
-    "Gastroenterology": ["Gastroenterology", "Gastrointestinal", "celiac", "endoscopy", "Crohn's", "pancreatitis", "colonscopy"],
+    "Fetal/Newborn Medicine": ["Newborn", "Newborns", "Fetus", "Fetal", "neonatology", "prenatal diagnosis", "congenital"],
+    "Gastroenterology": ["Gastroenterology", "Gastrointestinal", "celiac", "endoscopy", "Crohn's", "pancreatitis", "colonoscopy"],
     "Hematology": ["Hematology", "anemia", "sickle cell", "hemophilia", "bone marrow", "coagulation", "thrombocytopenia"],
     "Immunology": ["Immunology", "Immune System", "immunoglobulins", "immune deficiency", "lymphocytes", "cytokines"],
     "Infectious Disease": ["infectious", "viral", "bacterial", "covid", "sars-cov-2", "antivirals", "sepsis", "vaccination"],
-    "Metabolic": ["metabolic", "obesity", "diabetes", "insulin", "glucose", "hypoglysemia", "hyperammonemia"],
+    "Metabolic": ["metabolic", "obesity", "diabetes", "insulin", "glucose", "hypoglycemia", "hyperammonemia"],
     "Nephrology": ["Nephrology","Kidney", "proteinuria", "hematuria", "nephrotic syndrome", "hypertension"],
     "Neurology": ["neurology", "brain", "neuron", "epilepsy", "alzheimer", "parkinsons", "Epilepsy","psychiatry","depression", "anxiety", "mental health", "seizures", "stroke", "neuropathy", "neuroimaging", "neuromuscular"],
     "Psychiatry": ["psychiatry", "depression", "anxiety", "mental health", "ADHD", "PTSD", "psychosis", "psychopharmacology"],
@@ -149,38 +154,38 @@ category_keyword_map = {
     "Reproductive Health": ["Reproductive Health", "Prenatal Care", "Feminine Health", "Women Health", "sexual health", "PCOS", "STI screening"],
     "Surgery": ["Surgery", "Surgical", "laparoscopic"],
     "Transplant":["Transplant", "organ allocation", "HLA matching"],
-    "Urology": ["Urology", "UTI", "hematuria", "kidney stones", "urodynamics"],
+    "Urology": ["Urology", " UTI ", "hematuria", "kidney stones", "urodynamics"],
 
 
     "Biomarkers": ["Biomarkers", "surrogate endpoint", "ROC/AUC"],
-    "Diagnostics": ["diagnostic", "diagnostics", "monitoring", "lab-developed test", "clinical ulity"],
+    "Diagnostics": ["diagnostic", "diagnostics", "monitoring", "lab-developed test", "clinical utility"],
     "Educational/Training Materials": ["Educational Materials", "Training Materials", "Training and Education", "instructional design", "curriculum"],
-    "Medical Devices": ["Medical Devices", "Devices", "Medical Technology", "Instruments","implant", "sensor", "FDA 510(k)", "PMA"],
+    "Medical Devices": ["Medical Devices", "Devices", "Medical Technology", "Instruments","implant", "sensor", "FDA 510(k)", " PMA "],
     "Medical Equipment": ["Medical Equipment", "equipment", "electrical safety"],
     "Research Tools" : ["Research Tools", "Helping Researchers", "Tools for Researchers", "automation", "reagents"],
     "Animal Models": ["animal models", "mouse model", "transgenic", "xenograft"],
-    "Antibody": ["antibody", "monoclonal"],
-    "Antigen": ["Antigen"],
-    "Assay": ["Assay"],
-    "Bacterial Strain" :["bacterial strain", "bacteria use for research", "bacteria for research"],
-    "Cell Line" : ["cell line", "cell lines"],
-    "Plasmid/Vector": ["plasmid", "vector"],
-    "Protein (Research Tool)": ["protein", "proteins"],
-    "Software": ["software", "algorithm"],
-    "Imaging Software": ["imaging", "imaging software", "radiology"],
+    "Antibody": ["antibody", "monoclonal", "polyclonal", "lot-to-lot variability", "cross-reactivity"],
+    "Antigen": ["Antigen", "immunogen", "hapten", "immunogenicity", "pathogen-associated"],
+    "Assay": ["Assay", " PCR ", "immunoassay", "limit of detection"],
+    "Bacterial Strain" :["bacterial strain", "bacteria use for research", "bacteria for research", "culture conditions", "reference strain"],
+    "Cell Line" : ["cell line", "cell lines", "CRISPR editing", "phenotype drift"],
+    "Plasmid/Vector": ["plasmid", "vector", "antibiotic resistance gene", "cloning sites", "lentiviral", "titer"],
+    "Protein (Research Tool)": ["protein", "proteins", "purification", "activity assay", "binding kinetics", "post-translational modifications"],
+    "Software": ["software", "algorithm", "interoperability", "cybersecurity", "version control", "cloud hosting"],
+    "Imaging Software": ["imaging", "imaging software", "radiology", " DICOM", " PACS ", "segmentation"],
 }
 # Specific types of therapy
 therapy_subtypes = {
-    "ASOs": ["ASOs", "ASO", "Antisense oligonucleotide"],
-    "Cell Therapy": ["cell therapy", "stem cell", "unicellular", "multicellular", "car t", "t cell"],
-    "Gene Therapy": ["gene therapy", "genetic therapy"],
-    "Large Molecule": ["large molecule", "large molecules"],
-    "Microbiome":["microbiome","microbiotic","microbiomes"],
-    "Nutraceuticals/Supplements": ["Nutraceuticals", "Supplements", "Nutritional Supplements"],
-    "Peptide": ["Peptide","peptides"],
-    "Protein": ["Protein", "proteins"],
-    "RNA (ie. mRNA, siRNA)": ["rna", "mrna", "sirna"],
-    "Small Molecule": ["small molecule", "small molecule therapy"],
+    "ASOs": ["ASOs", "ASO", "Antisense oligonucleotide", "RNA splicing", "exon skipping", "RNase H", "gapmer", "GalNAc", "intrathecal dosing"],
+    "Cell Therapy": ["cell therapy", "stem cell", "unicellular", "multicellular", "car t", "t cell", "CAR-T", "TCR-T", "potency assay", "GMP manufacturing", "cryopreservation", "cell expansion"],
+    "Gene Therapy": ["gene therapy", "genetic therapy", "lentiviral vector", "transgene", "insertional mutagenesis", "genome editing", " AAV "],
+    "Large Molecule": ["large molecule", "large molecules", "Fc region", "monoclonal antibody", "glycosylation", "half-life extension", "cold chain", "immunogenicity (ADA)"],
+    "Microbiome":["microbiome","microbiotic","microbiomes", "dysbiosis", "16S", "shotgun metagenomics", "SCFAs", "probiotics", "prebiotics", "fecal microbiota transplant", "colonization resistance", "antibiotics effect", "microbial ecology"],
+    "Nutraceuticals/Supplements": ["Nutraceuticals", "Supplements", "Nutritional Supplements", "FDA DSHEA", "evidence grading", "USP verification"],
+    "Peptide": ["Peptide","peptides", "proteolysis", "cyclization", "subcutaneous injection", "receptor antagonist"],
+    "Protein": ["Protein", "proteins", "enzyme replacement", "PK clearance", "post-translational modifications"],
+    "RNA (ie. mRNA, siRNA)": [" rna ", "mrna", "sirna", "lipid nanoparticles", "innate immune activation", " RISC ", "tissue targeting"],
+    "Small Molecule": ["small molecule", "small molecule therapy", "oral bioavailability", " ADME ", "CYP interactions", "potency (IC50)", "lead optimization", "toxicity (hERG)", "medicinal chemistry"],
 }
 
 # Flatten both maps
@@ -189,55 +194,53 @@ flat_keyword_map = {
     for cat, kws in category_keyword_map.items() #iterate through categories and their lists
     for kw in kws # iterate through each keyword in list
 }
+# converts dicts to new dict where individual keyword from each list becomes key and category is value
 flat_therapy_map = {
     kw.lower(): subtype
     for subtype, kws in therapy_subtypes.items()
     for kw in kws
 }
-# converts dicts to new dict where individual keyword from each list becomes key and category is value
+
+# prevent false positives in keyword-matching
+def keyword_found(text, kw):
+    pattern = r'\b' + re.escape(kw.lower().strip()) + r'\b'
+    return re.search(pattern, text.lower()) is not None
 
 # Matching logic
 def match_keywords(text, general_map, therapy_map):
-    if pd.isna(text) or not isinstance(text, str): # Handle NaN or non-string input from Scraped_Text
-        return np.nan
+    if pd.isna(text) or not isinstance(text, str):
+        return np.nan, np.nan, np.nan
 
     text = text.lower()
     matched = set()
     keys = set()
 
-    # General keyword matching
+    # general keyword matching
     for kw, cat in general_map.items():
         if kw in text:
             matched.add(cat)
             keys.add(kw)
 
-    # maybe some might have therapy in text but not practice it; pass if no subtypes are matched
-    # Therapy keyword logic
-    if "therapy" in text or "therapeutics" in text:
-        found_subtypes = [subcat for kw, subcat in therapy_map.items() if kw in text]
-        if found_subtypes:
-            matched.update(found_subtypes)
-        # else:
-        #    matched.add("Therapeutics")  # fallback if no subtype found
+    # therapy matching
+    for kw, subcat in therapy_map.items():
+        if kw in text:
+            matched.add(subcat)
+            keys.add(kw)
     
     # companies that trigger both cancer and infectious diseases should just be oncology
     if "Oncology" in matched and "Infectious Disease" in matched:
-      matched.remove("Infectious Disease")
+        matched.remove("Infectious Disease")
 
-    # instead of returning nan, maybe reiterate functions with new params
-    # return ", ".join(sorted(matched)) if matched else np.nan
-    if matched:
-      matched_str = ", ".join(sorted(matched))
-      keys_str = ", ".join(sorted(keys))
-      if keys:
-        return f"Categories: {matched_str}\nKeys: {keys_str}"
-      else:
-        return f"Categories: {matched_str}"
-    else:
-      return np.nan
+    categories_str = ", ".join(sorted(matched)) if matched else np.nan
+    keys_str = ", ".join(sorted(keys)) if keys else np.nan
+    double_check = categories_str if matched and len(matched) >= 3 else np.nan
+
+    return categories_str, keys_str, double_check
 
 # Apply categorization
-df["Categories_Predicted"] = df["Scraped_Text"].apply(lambda text: match_keywords(text, flat_keyword_map, flat_therapy_map))
+df[["Categories_Predicted", "Matched_Keywords", "Double_check"]] = df["Scraped_Text"].apply(
+    lambda text: pd.Series(match_keywords(text, flat_keyword_map, flat_therapy_map))
+)
 
 # Optional ML predictions if some categories are still missing
 labeled = df.dropna(subset=["Categories_Predicted"])
@@ -260,6 +263,8 @@ else:
 output_path = "Scraping_Results.xlsx"
 with pd.ExcelWriter(output_path, engine='openpyxl', mode='w') as writer:
     df.to_excel(writer, sheet_name="All Data", index=False)
+    df[df["Double_check"].notna()][["Name", "Website", "Categories_Predicted", "Matched_Keywords", "Double_check"]].to_excel(
+        writer, sheet_name="Check", index=False)
     df[["Name", "Website", "Categories_Predicted", "ML_Predicted"]].to_excel(
         writer, sheet_name="Summary", index=False)
     df[df["Categories_Predicted"].isna()][["Name", "Website", "ML_Predicted"]].to_excel(
