@@ -62,6 +62,7 @@ def scrape_relevant_sections(url, selenium_driver=None):
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=5)
+        # response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
 
         for tag in soup(["script", "style", "noscript", "nav", "footer"]):   # don't classify junk page content
@@ -130,62 +131,62 @@ df["Scraped_Text"] = df["Website"].apply(scrape_relevant_sections)
 category_keyword_map = {
     "Allergy" : ["Allergy", "Allergies", "allergen", " IgE ", "anaphylaxis", "urticaria", "hives", "epinephrine auto-injector", "allergic"],
     "Anesthesia": ["Anesthesia", "Anesthetics", "Anesthesiology", "intubation", "analgesia", "sedation", "ASA classification", "perioperative", " PACU "],
-    "Autoimmune": ["autoimmune", "lupus", "rheumatoid","AIDS/HIV", "autoantibodies", "multiple sclerosis", "type 1 diabetes", "immunosuppression"],
-    "Cardiology": ["cardiology", "heart", "cardiac", "arrhythmia", " CHD ", "echocardiogram", "ECG/EKG", "pacemaker", "cardiomyopathy" ,"electrophysiology"],
-    "Cardiovascular": ["Cardiovascular","vascular", "hypertension", "atherosclerosis", "stroke", "myocardial ischemia"],
-    "Dermatology": ["dermatology", "skin", "eczema", "psoriasis", "acne", "dermatitis", "pruritus", "skin biopsy"],
-    "Endocrinology": ["Endocrine", "Endocrinology", "adrenal", "thyroid", "hormones"],
+    "Autoimmune": ["autoimmune", "lupus", "rheumatoid", "autoantibodies", "multiple sclerosis"],
+    "Cardiology": ["cardiology", "arrhythmia", "echocardiogram", "ECG/EKG", "pacemaker", "cardiomyopathy" ,"electrophysiology"],
+    "Cardiovascular": ["Cardiovascular", "atherosclerosis", "myocardial ischemia"],
+    "Dermatology": ["dermatology", "eczema", "psoriasis", "acne", "dermatitis", "pruritus", "skin biopsy"],
+    "Endocrinology": ["Endocrine", "Endocrinology", "adrenal", "thyroid"],
     "Fetal/Newborn Medicine": ["Newborn", "Newborns", "Fetus", "Fetal", "neonatology", "prenatal diagnosis", "congenital"],
     "Gastroenterology": ["Gastroenterology", "Gastrointestinal", "celiac", "endoscopy", "Crohn's", "pancreatitis", "colonoscopy"],
-    "Hematology": ["Hematology", "anemia", "sickle cell", "hemophilia", "bone marrow", "coagulation", "thrombocytopenia"],
-    "Immunology": ["Immunology", "Immune System", "immunoglobulins", "immune deficiency", "lymphocytes", "cytokines"],
-    "Infectious Disease": ["infectious", "viral", "bacterial", "covid", "sars-cov-2", "antivirals", "sepsis", "vaccination"],
-    "Metabolic": ["metabolic", "obesity", "diabetes", "insulin", "glucose", "hypoglycemia", "hyperammonemia"],
-    "Nephrology": ["Nephrology","Kidney", "proteinuria", "hematuria", "nephrotic syndrome", "hypertension"],
-    "Neurology": ["neurology", "brain", "neuron", "epilepsy", "alzheimer", "parkinsons", "Epilepsy","psychiatry","depression", "anxiety", "mental health", "seizures", "stroke", "neuropathy", "neuroimaging", "neuromuscular"],
-    "Psychiatry": ["psychiatry", "depression", "anxiety", "mental health", "ADHD", "PTSD", "psychosis", "psychopharmacology"],
-    "Neuroscience": ["Neuroscience", "brain circuit", "cognition", "neurodevelopment", "neuroplasticity", "neurogenetics"],
-    "Obesity": ["Obesity", "Weight Loss", "Weight Management", "metabolic syndrome", "insulin resistance", "fatty liver"],
-    "Oncology": ["oncology", "cancer", "tumor", "carcinoma", "chemotherapy", "immunotherapy", "leukemia", "lymphoma"],
+    "Hematology": ["Hematology", "anemia", "sickle cell", "hemophilia", "thrombocytopenia"],
+    "Immunology": ["Immunology", "immune deficiency"],
+    "Infectious Disease": ["infectious", "covid", "sars-cov-2", "antivirals", "sepsis"],
+    "Metabolic": ["metabolic", "hypoglycemia", "hyperammonemia"],
+    "Nephrology": ["Nephrology", "proteinuria", "nephrotic syndrome"],
+    "Neurology": ["neurology", "neuron", "epilepsy", "alzheimer", "parkinsons", "Epilepsy","psychiatry", "seizures", "neuropathy", "neuroimaging", "neuromuscular"],
+    "Psychiatry": ["psychiatry", "ADHD", "PTSD", "psychosis", "psychopharmacology", "depression", "anxiety", "mental health"],
+    "Neuroscience": ["Neuroscience", "brain circuit", "neurodevelopment", "neuroplasticity", "neurogenetics"],
+    "Obesity": ["Obesity", "metabolic syndrome", "insulin resistance", "fatty liver"],
+    "Oncology": ["oncology", "cancer", "tumor", "carcinoma", "chemotherapy", "leukemia", "lymphoma"],
     "Opthamology": ["Opthamology", "amblyopia", "strabismus", "glaucoma", "retina", "cornea", "fundus exam", "eye trauma"],
     "Orthopedics": ["Orthopedic", "sports injury", "ligament/ACL", "joint pain", "hip dysplasia", "physical therapy"],
-    "Pulmonary": ["pulmonary", "respiratory", "lung", "asthma", "COPD", "cystic fibrosis", "pneumonia", "bronchiolitis"],
+    "Pulmonary": ["pulmonary", "asthma", "COPD", "cystic fibrosis", "bronchiolitis"],
     "Rare Diseases": ["rare disease", "orphan", "ultra-rare", "diagnostic odyssey"],
-    "Reproductive Health": ["Reproductive Health", "Prenatal Care", "Feminine Health", "Women Health", "sexual health", "PCOS", "STI screening"],
-    "Surgery": ["Surgery", "Surgical", "laparoscopic"],
+    "Reproductive Health": ["Reproductive Health", "Feminine Health", "PCOS"],
+    "Surgery": ["laparoscopic"],
     "Transplant":["Transplant", "organ allocation", "HLA matching"],
-    "Urology": ["Urology", " UTI ", "hematuria", "kidney stones", "urodynamics"],
+    "Urology": ["Urology", " UTI ", "kidney stones", "urodynamics"],
 
 
     "Biomarkers": ["Biomarkers", "surrogate endpoint", "ROC/AUC"],
     "Diagnostics": ["diagnostic", "diagnostics", "monitoring", "lab-developed test", "clinical utility"],
     "Educational/Training Materials": ["Educational Materials", "Training Materials", "Training and Education", "instructional design", "curriculum"],
-    "Medical Devices": ["Medical Devices", "Devices", "Medical Technology", "Instruments","implant", "sensor", "FDA 510(k)", " PMA "],
-    "Medical Equipment": ["Medical Equipment", "equipment", "electrical safety"],
-    "Research Tools" : ["Research Tools", "Helping Researchers", "Tools for Researchers", "automation", "reagents"],
+    "Medical Devices": ["Medical Devices", "Medical Technology", "implant", "FDA 510(k)", " PMA "],
+    "Medical Equipment": ["Medical Equipment", "electrical safety"],
+    "Research Tools" : ["Research Tools", "Helping Researchers", "Tools for Researchers"],
     "Animal Models": ["animal models", "mouse model", "transgenic", "xenograft"],
-    "Antibody": ["antibody", "monoclonal", "polyclonal", "lot-to-lot variability", "cross-reactivity"],
+    "Antibody": ["polyclonal", "lot-to-lot variability", "cross-reactivity"],
     "Antigen": ["Antigen", "immunogen", "hapten", "immunogenicity", "pathogen-associated"],
-    "Assay": ["Assay", " PCR ", "immunoassay", "limit of detection"],
+    "Assay": [" PCR ", "immunoassay", "limit of detection"],
     "Bacterial Strain" :["bacterial strain", "bacteria use for research", "bacteria for research", "culture conditions", "reference strain"],
     "Cell Line" : ["cell line", "cell lines", "CRISPR editing", "phenotype drift"],
-    "Plasmid/Vector": ["plasmid", "vector", "antibiotic resistance gene", "cloning sites", "lentiviral", "titer"],
-    "Protein (Research Tool)": ["protein", "proteins", "purification", "activity assay", "binding kinetics", "post-translational modifications"],
-    "Software": ["software", "algorithm", "interoperability", "cybersecurity", "version control", "cloud hosting"],
-    "Imaging Software": ["imaging", "imaging software", "radiology", " DICOM", " PACS ", "segmentation"],
+    "Plasmid/Vector": ["plasmid", "antibiotic resistance gene", "cloning sites", "lentiviral", "titer"],
+    "Protein (Research Tool)": ["purification", "activity assay", "binding kinetics", "post-translational modifications"],
+    "Software": ["interoperability"],
+    "Imaging Software": ["imaging software", " DICOM", " PACS "],
 }
 # Specific types of therapy
 therapy_subtypes = {
     "ASOs": ["ASOs", "ASO", "Antisense oligonucleotide", "RNA splicing", "exon skipping", "RNase H", "gapmer", "GalNAc", "intrathecal dosing"],
-    "Cell Therapy": ["cell therapy", "stem cell", "unicellular", "multicellular", "car t", "t cell", "CAR-T", "TCR-T", "potency assay", "GMP manufacturing", "cryopreservation", "cell expansion"],
-    "Gene Therapy": ["gene therapy", "genetic therapy", "lentiviral vector", "transgene", "insertional mutagenesis", "genome editing", " AAV "],
-    "Large Molecule": ["large molecule", "large molecules", "Fc region", "monoclonal antibody", "glycosylation", "half-life extension", "cold chain", "immunogenicity (ADA)"],
+    "Cell Therapy": ["cell therapy", "stem cell", "unicellular", "multicellular", "car t", "CAR-T", "TCR-T"],
+    "Gene Therapy": ["gene therapy", "genetic therapy", "lentiviral vector", "insertional mutagenesis", " AAV "],
+    "Large Molecule": ["large molecule", "large molecules", "Fc region", "glycosylation", "half-life extension", "cold chain"],
     "Microbiome":["microbiome","microbiotic","microbiomes", "dysbiosis", "16S", "shotgun metagenomics", "SCFAs", "probiotics", "prebiotics", "fecal microbiota transplant", "colonization resistance", "antibiotics effect", "microbial ecology"],
     "Nutraceuticals/Supplements": ["Nutraceuticals", "Supplements", "Nutritional Supplements", "FDA DSHEA", "evidence grading", "USP verification"],
     "Peptide": ["Peptide","peptides", "proteolysis", "cyclization", "subcutaneous injection", "receptor antagonist"],
     "Protein": ["Protein", "proteins", "enzyme replacement", "PK clearance", "post-translational modifications"],
-    "RNA (ie. mRNA, siRNA)": [" rna ", "mrna", "sirna", "lipid nanoparticles", "innate immune activation", " RISC ", "tissue targeting"],
-    "Small Molecule": ["small molecule", "small molecule therapy", "oral bioavailability", " ADME ", "CYP interactions", "potency (IC50)", "lead optimization", "toxicity (hERG)", "medicinal chemistry"],
+    "RNA (ie. mRNA, siRNA)": ["mrna", "sirna", "lipid nanoparticles", "innate immune activation", " RISC ", "tissue targeting"],
+    "Small Molecule": ["small molecule", "small molecule therapy"],
 }
 
 # Flatten both maps
@@ -226,21 +227,20 @@ def match_keywords(text, general_map, therapy_map):
         if kw in text:
             matched.add(subcat)
             keys.add(kw)
-    
+
     # companies that trigger both cancer and infectious diseases should just be oncology
     if "Oncology" in matched and "Infectious Disease" in matched:
         matched.remove("Infectious Disease")
 
     categories_str = ", ".join(sorted(matched)) if matched else np.nan
     keys_str = ", ".join(sorted(keys)) if keys else np.nan
-    double_check = categories_str if matched and len(matched) >= 3 else np.nan
+    double_check = categories_str if matched and len(matched) > 3 else np.nan
 
     return categories_str, keys_str, double_check
 
 # Apply categorization
 df[["Categories_Predicted", "Matched_Keywords", "Double_check"]] = df["Scraped_Text"].apply(
-    lambda text: pd.Series(match_keywords(text, flat_keyword_map, flat_therapy_map))
-)
+    lambda text: pd.Series(match_keywords(text, flat_keyword_map, flat_therapy_map)))
 
 # Optional ML predictions if some categories are still missing
 labeled = df.dropna(subset=["Categories_Predicted"])
@@ -258,6 +258,7 @@ if not labeled.empty:
     df.loc[unlabeled.index, "ML_Predicted"] = y_pred
 else:
     df["ML_Predicted"] = np.nan
+
 
 # Save Excel output
 output_path = "Scraping_Results.xlsx"
