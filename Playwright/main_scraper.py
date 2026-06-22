@@ -7,7 +7,8 @@ import pandas as pd
 import re
 from google.colab import files
 from functools import partial
-from playwright.sync_api import sync_playwright
+from playwright.async_api import async_playwright
+import asyncio
 
 # Load Excel
 df = pd.read_excel("Companies.xlsx")
@@ -126,16 +127,17 @@ def scrape_with_requests(url, selenium_driver=None):
         print(f"Error scraping {url}: {e}")
         return "" # Return an empty string on error
 
-def scrape_with_playwright(url):
+async def scrape_with_playwright(url):
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page(user_agent="Mozilla/5.0")
-            page.goto(url, timeout=15000, wait_until="networkidle")
-            page.wait_for_timeout(2000)
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page(user_agent="Mozilla/5.0")
 
-            html = page.content()
-            browser.close()
+            await page.goto(url, timeout=15000, wait_until="networkidle") # long timeout?
+            await page.wait_for_timeout(2000)
+
+            html = await page.content()
+            await browser.close()
 
         soup = BeautifulSoup(html, 'html.parser')
 
@@ -147,30 +149,40 @@ def scrape_with_playwright(url):
         for tag in soup.find_all(["h1", "h2", "h3", "p", "div"]):
             txt = tag.get_text(separator=' ', strip=True)
             txt = re.sub(r'\s+', ' ', txt).lower().strip()
+
             if len(txt) > 50:
                 text_blocks.append(txt)
             if len(text_blocks) >= 10:
                 break
 
         text_blocks = list(dict.fromkeys(text_blocks))
-        return "\n".join(text_blocks).strip()
+        combined_string = "Playwright found: " + "\n".join(text_blocks).strip()
+
+        return combined_string
 
     except Exception as e:
         print(f"Playwright failed for {url}: {e}")
         return ""
 
-def scrape_relevant_sections(url):
+async def scrape_relevant_sections(url):
     text = scrape_with_requests(url)
 
     # Fallback to Playwright if requests gave too little usable text
     if not text or len(text) < 100:
         print(f"Trying browser fallback for {url}")
-        browser_text = scrape_with_playwright(url)
+        browser_text = await scrape_with_playwright(url)
         if browser_text:
             return browser_text
     return text
 
-df["Scraped_Text"] = df["Website"].apply(scrape_relevant_sections)
+
+async def process_dataframe(df):
+    tasks = [scrape_relevant_sections(url) for url in df["Website"]]
+    results = await asyncio.gather(*tasks)
+    df["Scraped_Text"] = results
+    return df
+
+df = await process_dataframe(df)
 
 # General keyword-category map (excluding therapies)
 category_keyword_map = {
@@ -303,7 +315,6 @@ if not labeled.empty:
     df.loc[unlabeled.index, "ML_Predicted"] = y_pred
 else:
     df["ML_Predicted"] = np.nan
-
 
 # Save Excel output
 output_path = "Scraping_Results.xlsx"
