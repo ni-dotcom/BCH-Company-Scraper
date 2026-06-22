@@ -7,6 +7,8 @@ import pandas as pd
 import re
 from google.colab import files
 from functools import partial
+from playwright.async_api import async_playwright
+import asyncio
 
 # Load Excel
 df = pd.read_excel("Companies.xlsx")
@@ -26,12 +28,12 @@ def clean_and_validate_url(url):
        re.fullmatch(r'^\s*(not found|n/a|none|unknown)\s*$', url, re.IGNORECASE) or \
        url == '':
         print(f"Skipping clearly invalid URL pattern: {url}")
-        return np.nan
+        return 'Check website: ' + url
 
     # Check if it contains spaces or other characters not allowed in domain names (simple check)
     if ' ' in url and not url.startswith('http'): # Allow spaces if it's already a full http/https URL (less common, but possible in malformed data)
         print(f"Skipping URL with spaces and no scheme: {url}")
-        return np.nan
+        return 'Check website: ' + url
 
     # Prepend https:// if no scheme is present
     if not url.startswith('http://') and not url.startswith('https://'):
@@ -40,12 +42,13 @@ def clean_and_validate_url(url):
             return 'https://' + url
         else:
             print(f"Skipping non-domain-like string without scheme: {url}")
-            return np.nan
+            return 'Check website: ' + url
     return url
 
 df["Website"] = df["Website"].apply(clean_and_validate_url)
-# Drop rows where 'Website' became NaN after validation
-df.dropna(subset=["Website"], inplace=True)
+check_website = df[df["Website"].str.contains('Check website: ', na=True)][["Name", "Website"]]
+# Drop rows
+df = df[~df["Website"].str.contains('Check website: ', na=True)].copy()
 
 # Clean text function
 def clean_text(text):
@@ -57,8 +60,8 @@ for col in df.columns:
     if df[col].dtype == 'object': # object data type indicates it contains strings or mixed types
         df[col] = df[col].apply(clean_text)
 
-# Scraping function - now accepts selenium_driver as an argument
-def scrape_relevant_sections(url, selenium_driver=None):
+# Scraping function using requests
+def scrape_with_requests(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=5)
@@ -125,7 +128,62 @@ def scrape_relevant_sections(url, selenium_driver=None):
         print(f"Error scraping {url}: {e}")
         return "" # Return an empty string on error
 
-df["Scraped_Text"] = df["Website"].apply(scrape_relevant_sections)
+async def scrape_with_playwright(url):
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page(user_agent="Mozilla/5.0")
+
+            await page.goto(url, timeout=15000, wait_until="networkidle") # long timeout?
+            await page.wait_for_timeout(2000)
+
+            html = await page.content()
+            await browser.close()
+
+        soup = BeautifulSoup(html, 'html.parser')
+
+        for tag in soup(["script", "style", "noscript", "nav", "footer"]):
+            tag.decompose()
+
+        text_blocks = []
+
+        for tag in soup.find_all(["h1", "h2", "h3", "p", "div"]):
+            txt = tag.get_text(separator=' ', strip=True)
+            txt = re.sub(r'\s+', ' ', txt).lower().strip()
+
+            if len(txt) > 50:
+                text_blocks.append(txt)
+            if len(text_blocks) >= 10:
+                break
+
+        text_blocks = list(dict.fromkeys(text_blocks))
+        combined_string = "Playwright found: " + "\n".join(text_blocks).strip()
+
+        return combined_string
+
+    except Exception as e:
+        print(f"Playwright failed for {url}: {e}")
+        return ""
+
+async def scrape_relevant_sections(url):
+    text = scrape_with_requests(url)
+
+    # Fallback to Playwright if requests gave too little usable text
+    if not text or len(text) < 100:
+        print(f"Trying browser fallback for {url}")
+        browser_text = await scrape_with_playwright(url)
+        if browser_text:
+            return browser_text
+    return text
+
+
+async def process_dataframe(df):
+    tasks = [scrape_relevant_sections(url) for url in df["Website"]]
+    results = await asyncio.gather(*tasks)
+    df["Scraped_Text"] = results
+    return df
+
+df = await process_dataframe(df)
 
 # General keyword-category map (excluding therapies)
 category_keyword_map = {
@@ -259,17 +317,18 @@ if not labeled.empty:
 else:
     df["ML_Predicted"] = np.nan
 
-
 # Save Excel output
 output_path = "Scraping_Results.xlsx"
 with pd.ExcelWriter(output_path, engine='openpyxl', mode='w') as writer:
-    df.to_excel(writer, sheet_name="All Data", index=False)
+    df.to_excel(writer, sheet_name="All Data", index=False)   # use filter() to reorder and return
     df[df["Double_check"].notna()][["Name", "Website", "Categories_Predicted", "Matched_Keywords", "Double_check"]].to_excel(
         writer, sheet_name="Check", index=False)
     df[["Name", "Website", "Categories_Predicted", "ML_Predicted"]].to_excel(
         writer, sheet_name="Summary", index=False)
     df[df["Categories_Predicted"].isna()][["Name", "Website", "ML_Predicted"]].to_excel(
         writer, sheet_name="ML Fill-In", index=False)
+    
+    check_website.to_excel(writer, sheet_name="Check_websites", index=False)
 
 # Download in Colab
 files.download(output_path)
