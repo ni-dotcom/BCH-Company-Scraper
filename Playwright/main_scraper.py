@@ -164,25 +164,28 @@ async def scrape_with_playwright(url):
         print(f"Playwright failed for {url}: {e}")
         return ""
 
+# limit to 5 urls at a time
+semaphore = asyncio.Semaphore(5)
 async def scrape_relevant_sections(url):
+  async with semaphore: # limit entire pipeline per URL
     text = scrape_with_requests(url)
 
-    # Fallback to Playwright if requests gave too little usable text
     if not text or len(text) < 100:
-        print(f"Trying browser fallback for {url}")
-        browser_text = await scrape_with_playwright(url)
-        if browser_text:
-            return browser_text
+        text = await scrape_with_playwright(url)
     return text
 
+results = await asyncio.gather(*(scrape_relevant_sections(u) for u in df["Website"]), return_exceptions=True) # return exceptions to prevent crashing everything if one url fails
 
-async def process_dataframe(df):
-    tasks = [scrape_relevant_sections(url) for url in df["Website"]]
-    results = await asyncio.gather(*tasks)
-    df["Scraped_Text"] = results
-    return df
+# clean results to remove exceptions
+cleaned_results = []
+for r in results:
+  if isinstance(r, Exception):
+    cleaned_results.append("")
+  else:
+    cleaned_results.append(r)
 
-df = await process_dataframe(df)
+df["Scraped_Text"] = cleaned_results
+
 
 # General keyword-category map (excluding therapies)
 category_keyword_map = {
