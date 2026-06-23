@@ -9,11 +9,53 @@ from google.colab import files
 from functools import partial
 from playwright.async_api import async_playwright
 import asyncio
+from urllib.parse import urljoin, urlparse
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-# Load Excel
+# =========================
+# CONFIG
+# =========================
+PAGE_HINT_TERMS = [
+    "about", "product", "pipeline", "technology", "mission",
+    "vision", "platform", "solution", "science", "company"
+]
+
+POSITIVE_LINK_TERMS = [
+    "about", "company", "who-we-are", "our-story", "mission",
+    "technology", "platform", "pipeline", "science", "products",
+    "solutions", "research"
+]
+
+NEGATIVE_LINK_TERMS = [
+    "careers", "jobs", "news", "press", "blog", "events",
+    "privacy", "terms", "legal", "contact", "support",
+    "login", "investor", "cookie"
+]
+
+PLAYWRIGHT_SEMAPHORE = asyncio.Semaphore(5)  # check with higher number
+
+# requests session with retries
+session = requests.Session()
+retries = Retry(
+    total=2,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["GET", "HEAD", "OPTIONS"]
+)
+session.mount("http://", HTTPAdapter(max_retries=retries))
+session.mount("https://", HTTPAdapter(max_retries=retries))
+
+
+# =========================
+# LOAD EXCEL
+# =========================
 df = pd.read_excel("Companies.xlsx")
 
-# Prepend 'https://' to URLs if missing and validate basic URL structure
+
+# =========================
+# URL CLEANING
+# =========================
 def clean_and_validate_url(url):
     if pd.isna(url) or not isinstance(url, str):
         return np.nan # Return NaN for non-string or NaN entries
@@ -50,7 +92,10 @@ check_website = df[df["Website"].str.contains('Check website: ', na=True)][["Nam
 # Drop rows
 df = df[~df["Website"].str.contains('Check website: ', na=True)].copy()
 
-# Clean text function
+
+# =========================
+# TEXT CLEANING
+# =========================
 def clean_text(text):
     if isinstance(text, str):
         return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text) # replaces non-printable ASCII letters with a space
@@ -60,34 +105,100 @@ for col in df.columns:
     if df[col].dtype == 'object': # object data type indicates it contains strings or mixed types
         df[col] = df[col].apply(clean_text)
 
-# Scraping function using requests
-def scrape_with_requests(url):
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=5)
-        # response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
 
-        for tag in soup(["script", "style", "noscript", "nav", "footer"]):   # don't classify junk page content
-          tag.decompose()
+# =========================
+# SCRAPING HELPERS
+# =========================
+def unique_join(items, sep="; "):
+    seen = []
+    for item in items:
+        if item and item not in seen:
+            seen.append(item)
+    return sep.join(seen)
 
-        keywords = ["about", "product", "pipeline", "technology", "mission", "vision", "platform", "solution"]
-        relevant_texts = [] # List to store individual text sections
-        keyword_match_found = False # Flag to track if any keyword sections were found
+def extract_meta_descriptions(soup):
+    meta_texts = []
 
-        # Search in h1, h2, h3, a, strong for keywords
-        for tag in soup.find_all(["h1", "h2", "h3", "a", "strong"]):  # iterates through these html tags
-            tag_text = tag.get_text(strip=True).lower() # extracts visible text content from each tag and cleans
-            if any(kw in tag_text for kw in keywords):
-                parent = tag.find_parent()
-                section_text = parent.get_text(separator=' ', strip=True) # text from different child tags are joined with space, and whitespace cleaned
-                section_text_processed = re.sub(r'\s+', ' ', section_text).lower().strip()
-                if len(section_text_processed) > 50:  # more than 50 char
-                    relevant_texts.append(section_text_processed)
-                    keyword_match_found = True
+    for attrs in [
+        {"name": "description"},
+        {"property": "og:description"},
+        {"name": "twitter:description"}
+    ]:
+        tag = soup.find("meta", attrs=attrs)
+        if tag and tag.get("content"):
+            text = re.sub(r"\s+", " ", tag["content"]).lower().strip()
+            if len(text) > 30:
+                meta_texts.append(text)
+
+    return list(dict.fromkeys(meta_texts))
+
+def extract_candidate_links(base_url, soup, max_links=3):
+    base_domain = urlparse(base_url).netloc.replace("www.", "")
+    candidates = []
+
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        anchor_text = a.get_text(" ", strip=True).lower()
+
+        if not href or href.startswith(("mailto:", "tel:", "javascript:", "#")):
+            continue
+
+        full_url = urljoin(base_url, href)
+        parsed = urlparse(full_url)
+        link_domain = parsed.netloc.replace("www.", "")
+
+        if link_domain and link_domain != base_domain:
+            continue
+
+        combined = (anchor_text + " " + full_url.lower()).strip()
+
+        if any(term in combined for term in NEGATIVE_LINK_TERMS):
+            continue
+
+        score = sum(term in combined for term in POSITIVE_LINK_TERMS)
+        if score > 0 and full_url.rstrip("/") != base_url.rstrip("/"):
+            candidates.append((score, full_url))
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+
+    seen = set()
+    final_links = []
+    for score, link in candidates:
+        if link not in seen:
+            seen.add(link)
+            final_links.append(link)
+        if len(final_links) >= max_links:
+            break
+
+    return final_links
+
+# 
+def extract_relevant_text_from_soup(soup):
+    for tag in soup(["script", "style", "noscript", "nav", "footer"]):
+        tag.decompose()
+
+    relevant_texts = []
+    keyword_section_found = False
+    fallback_used = False
+
+    # meta description often helps
+    meta_texts = extract_meta_descriptions(soup)
+    relevant_texts.extend(meta_texts)
+
+    # heading / section-based extraction
+    for tag in soup.find_all(["h1", "h2", "h3", "a", "strong"]):
+        tag_text = tag.get_text(" ", strip=True).lower()
+        if any(term in tag_text for term in PAGE_HINT_TERMS):
+            parent = tag.find_parent()
+            if parent and parent.name not in ["nav", "footer", "header"]:
+                section_text = parent.get_text(separator=" ", strip=True)
+                section_text = re.sub(r"\s+", " ", section_text).lower().strip()
+                if len(section_text) > 50:
+                    relevant_texts.append(section_text)
+                    keyword_section_found = True
 
         # Fallback 1: If no important sections are matched by keywords, use longer p tags
-        if not keyword_match_found:
+        if not keyword_section_found:
             long_paragraphs = []
             paragraphs = soup.find_all("p")
             for p in paragraphs:
@@ -97,10 +208,11 @@ def scrape_with_requests(url):
                 para_text_processed = re.sub(r'\s+', ' ', para_text).lower().strip()
                 if len(para_text_processed) > 50:
                     long_paragraphs.append(para_text_processed)
+                    fallback_used = True
             relevant_texts.extend(long_paragraphs)
 
             # Fallback 2: If p tags didn't yield enough, try longer div tags
-            if not long_paragraphs and not relevant_texts: # Only if p tags and initial search didn't add anything substantial
+            if not long_paragraphs:
                 long_div_texts = []
                 div_tags = soup.find_all("div")
                 for div_tag in div_tags:
@@ -110,82 +222,154 @@ def scrape_with_requests(url):
                     div_text_processed = re.sub(r'\s+', ' ', div_text).lower().strip()
                     if len(div_text_processed) > 50: # Using the same threshold for consistency
                        long_div_texts.append(div_text_processed)
+                       fallback_used = True
                 relevant_texts.extend(long_div_texts)
 
-        # De-duplicate repeated sections
-        relevant_texts = list(dict.fromkeys(relevant_texts))
+        relevant_texts = list(dict.fromkeys(relevant_texts))  # De-duplicate repeated sections
+        combined = "\n".join(relevant_texts) # Construct the combined string, joining with newlines
 
-        # Construct the combined string, joining with newlines
-        combined_string = "\n".join(relevant_texts)
+        method_used = "empty"
+        if keyword_section_found:
+            method_used = "keyword_section"
+        elif fallback_used:
+            method_used = "fallback"
+        if meta_texts:
+            method_used = method_used + " with meta"
+        return combined, method_used
 
-        if not keyword_match_found and relevant_texts: # If fallback was used and text was found
-            combined_string = "fallback: " + combined_string
+# =========================
+# REQUESTS SCRAPER
+# =========================
+def scrape_page_with_requests(url):
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        response = session.get(url, headers=headers, timeout=8, allow_redirects=True)
+        response.raise_for_status()
 
-        # Ensure consistent formatting even if no text was found (return empty string)
-        return combined_string.strip()
+        soup = BeautifulSoup(response.text, "html.parser")
+        text, detail = extract_relevant_text_from_soup(soup)
+
+        return text, soup, f"requests_{detail}", url
 
     except Exception as e:
-        print(f"Error scraping {url}: {e}")
-        return "" # Return an empty string on error
+        print(f"Requests error for {url}: {e}")
+        return "", None, "requests_error", url
 
+
+# =========================
+# PLAYWRIGHT FALLBACK
+# =========================
 async def scrape_with_playwright(url):
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page(user_agent="Mozilla/5.0")
+        async with PLAYWRIGHT_SEMAPHORE:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page(user_agent="Mozilla/5.0")
 
-            await page.goto(url, timeout=15000, wait_until="networkidle") # long timeout?
-            await page.wait_for_timeout(2000)
+                await page.goto(url, timeout=15000, wait_until="domcontentloaded")
+                await page.wait_for_timeout(2500)
 
-            html = await page.content()
-            await browser.close()
+                html = await page.content()
+                await browser.close()
 
-        soup = BeautifulSoup(html, 'html.parser')
+        soup = BeautifulSoup(html, "html.parser")
+        text, detail = extract_relevant_text_from_soup(soup)
 
-        for tag in soup(["script", "style", "noscript", "nav", "footer"]):
-            tag.decompose()
-
-        text_blocks = []
-
-        for tag in soup.find_all(["h1", "h2", "h3", "p", "div"]):
-            txt = tag.get_text(separator=' ', strip=True)
-            txt = re.sub(r'\s+', ' ', txt).lower().strip()
-
-            if len(txt) > 50:
-                text_blocks.append(txt)
-            if len(text_blocks) >= 10:
-                break
-
-        text_blocks = list(dict.fromkeys(text_blocks))
-        combined_string = "Playwright found: " + "\n".join(text_blocks).strip()
-
-        return combined_string
+        return text, f"playwright_{detail}"
 
     except Exception as e:
         print(f"Playwright failed for {url}: {e}")
-        return ""
-
-async def scrape_relevant_sections(url):
-    text = scrape_with_requests(url)
-
-    # Fallback to Playwright if requests gave too little usable text
-    if not text or len(text) < 100:
-        print(f"Trying browser fallback for {url}")
-        browser_text = await scrape_with_playwright(url)
-        if browser_text:
-            return browser_text
-    return text
+        return "", "playwright_error"
 
 
+# =========================
+# SITE SCRAPER
+# =========================
+async def scrape_site(url, force_subpages=False):
+    collected_texts = []
+    methods = []
+    source_urls = []
+
+    # 1) homepage via requests
+    homepage_text, homepage_soup, homepage_method, homepage_source = scrape_page_with_requests(url)
+
+    if homepage_text:
+        collected_texts.append(homepage_text)
+        methods.append(homepage_method)
+        source_urls.append(homepage_source)
+
+    # 2) useful internal links if homepage weak or if second-pass forces it
+    should_try_subpages = force_subpages or (not homepage_text) or (len(homepage_text) < 150)
+
+    if homepage_soup is not None and should_try_subpages:
+        candidate_links = extract_candidate_links(url, homepage_soup, max_links=3)
+
+        for link in candidate_links:
+            sub_text, _, sub_method, sub_source = scrape_page_with_requests(link)
+
+            if not sub_text or len(sub_text) < 100:
+                pw_text, pw_method = await scrape_with_playwright(link)
+                if pw_text:
+                    sub_text = pw_text
+                    sub_method = pw_method
+
+            if sub_text:
+                collected_texts.append(f"[source: {link}]\n{sub_text}")
+                methods.append(sub_method)
+                source_urls.append(sub_source)
+
+    # 3) homepage Playwright fallback if still weak
+    total_text = "\n\n".join(collected_texts).strip()
+    if not total_text or len(total_text) < 150:
+        pw_text, pw_method = await scrape_with_playwright(url)
+        if pw_text:
+            collected_texts.append(f"[source: {url}]\n{pw_text}")
+            methods.append(pw_method)
+            source_urls.append(url)
+
+    # dedupe blocks
+    collected_texts = list(dict.fromkeys([t for t in collected_texts if t]))
+    methods = list(dict.fromkeys([m for m in methods if m]))
+    source_urls = list(dict.fromkeys([s for s in source_urls if s]))
+
+    final_text = "\n\n".join(collected_texts).strip()
+    final_method = unique_join(methods)
+    final_sources = unique_join(source_urls)
+
+    if not final_text:
+        final_method = "all_failed"
+
+    return final_text, final_method, final_sources
+
+
+# =========================
+# FIRST SCRAPE PASS
+# =========================
 async def process_dataframe(df):
-    tasks = [scrape_relevant_sections(url) for url in df["Website"]]
-    results = await asyncio.gather(*tasks)
-    df["Scraped_Text"] = results
+    scraped_texts = []
+    scrape_methods = []
+    source_urls = []
+
+    total = len(df)
+    for i, url in enumerate(df["Website"], start=1):
+        text, method, source = await scrape_site(url, force_subpages=False)
+        scraped_texts.append(text)
+        scrape_methods.append(method)
+        source_urls.append(source)
+
+        if i % 25 == 0 or i == total:
+            print(f"Processed {i}/{total}")
+
+    df["Scraped_Text"] = scraped_texts
+    df["Scrape_Method"] = scrape_methods
+    df["Source_URL"] = source_urls
     return df
 
 df = await process_dataframe(df)
 
-# General keyword-category map (excluding therapies)
+# =======================
+# KEYWORD MAPS
+# =======================
 category_keyword_map = {
     "Allergy" : ["Allergy", "Allergies", "allergen", " IgE ", "anaphylaxis", "urticaria", "hives", "epinephrine auto-injector", "allergic"],
     "Anesthesia": ["Anesthesia", "Anesthetics", "Anesthesiology", "intubation", "analgesia", "sedation", "ASA classification", "perioperative", " PACU "],
@@ -260,8 +444,10 @@ flat_therapy_map = {
     for kw in kws
 }
 
-# prevent false positives in keyword-matching
-def keyword_found(text, kw):
+# =========================
+# MATCHING
+# =========================
+def keyword_found(text, kw):  # prevent false positives in keyword-matching (eliminated 8)
     pattern = r'\b' + re.escape(kw.lower().strip()) + r'\b'
     return re.search(pattern, text.lower()) is not None
 
@@ -276,13 +462,13 @@ def match_keywords(text, general_map, therapy_map):
 
     # general keyword matching
     for kw, cat in general_map.items():
-        if kw in text:
+        if keyword_found(text, kw):
             matched.add(cat)
             keys.add(kw)
 
     # therapy matching
     for kw, subcat in therapy_map.items():
-        if kw in text:
+        if keyword_found(text, kw):
             matched.add(subcat)
             keys.add(kw)
 
@@ -296,11 +482,15 @@ def match_keywords(text, general_map, therapy_map):
 
     return categories_str, keys_str, double_check
 
-# Apply categorization
+# =========================
+# FIRST CATEGORIZATION PASS
+# =========================
 df[["Categories_Predicted", "Matched_Keywords", "Double_check"]] = df["Scraped_Text"].apply(
     lambda text: pd.Series(match_keywords(text, flat_keyword_map, flat_therapy_map)))
 
-# Optional ML predictions if some categories are still missing
+# =========================
+# OPTIONAL ML FILL-IN
+# =========================
 labeled = df.dropna(subset=["Categories_Predicted"])
 if not labeled.empty:
     vectorizer = TfidfVectorizer(max_features=1000, stop_words="english")
@@ -317,7 +507,9 @@ if not labeled.empty:
 else:
     df["ML_Predicted"] = np.nan
 
-# Save Excel output
+# =========================
+# SAVE OUTPUT
+# =========================
 output_path = "Scraping_Results.xlsx"
 with pd.ExcelWriter(output_path, engine='openpyxl', mode='w') as writer:
     df.to_excel(writer, sheet_name="All Data", index=False)   # use filter() to reorder and return
