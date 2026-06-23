@@ -489,6 +489,35 @@ df[["Categories_Predicted", "Matched_Keywords", "Double_check"]] = df["Scraped_T
     lambda text: pd.Series(match_keywords(text, flat_keyword_map, flat_therapy_map)))
 
 # =========================
+# OPTIONAL SECOND PASS:
+# only re-scrape uncategorized rows, forcing subpages
+# =========================
+async def second_pass_uncategorized(df):
+    mask = df["Categories_Predicted"].isna() & df["Website"].notna()
+
+    to_retry = df[mask].index.tolist()
+    print(f"Second pass rows: {len(to_retry)}")
+
+    for i, idx in enumerate(to_retry, start=1):
+        url = df.at[idx, "Website"]
+        new_text, new_method, new_source = await scrape_site(url, force_subpages=True)
+
+        if new_text and len(new_text) > len(str(df.at[idx, "Scraped_Text"])):
+            df.at[idx, "Scraped_Text"] = new_text
+            df.at[idx, "Scrape_Method"] = f"{df.at[idx, 'Scrape_Method']}; second_pass:{new_method}"
+            df.at[idx, "Source_URL"] = new_source
+
+            cats, kws, dbl = match_keywords(new_text, flat_keyword_map, flat_therapy_map)
+            df.loc[idx, ["Categories_Predicted", "Matched_Keywords", "Double_check"]] = [cats, kws, dbl]
+
+        if i % 25 == 0 or i == len(to_retry):
+            print(f"Second pass processed {i}/{len(to_retry)}")
+
+    return df
+
+df = await second_pass_uncategorized(df)
+
+# =========================
 # OPTIONAL ML FILL-IN
 # =========================
 labeled = df.dropna(subset=["Categories_Predicted"])
