@@ -38,8 +38,8 @@ PLAYWRIGHT_SEMAPHORE = asyncio.Semaphore(5)  # check with higher number
 # requests session with retries
 session = requests.Session()
 retries = Retry(
-    total=2,
-    backoff_factor=1,
+    total=1,
+    backoff_factor=0.5,
     status_forcelist=[429, 500, 502, 503, 504],
     allowed_methods=["GET", "HEAD", "OPTIONS"]
 )
@@ -51,7 +51,6 @@ session.mount("https://", HTTPAdapter(max_retries=retries))
 # LOAD EXCEL
 # =========================
 df = pd.read_excel("Companies.xlsx")
-
 
 # =========================
 # URL CLEANING
@@ -116,6 +115,7 @@ def unique_join(items, sep="; "):
             seen.append(item)
     return sep.join(seen)
 
+# check meta descriptions in a website for more info
 def extract_meta_descriptions(soup):
     meta_texts = []
 
@@ -132,6 +132,7 @@ def extract_meta_descriptions(soup):
 
     return list(dict.fromkeys(meta_texts))
 
+# find other useful links on the homepage
 def extract_candidate_links(base_url, soup, max_links=3):
     base_domain = urlparse(base_url).netloc.replace("www.", "")
     candidates = []
@@ -172,7 +173,7 @@ def extract_candidate_links(base_url, soup, max_links=3):
 
     return final_links
 
-# 
+# search a webpage for possible useful text
 def extract_relevant_text_from_soup(soup):
     for tag in soup(["script", "style", "noscript", "nav", "footer"]):
         tag.decompose()
@@ -244,7 +245,7 @@ def scrape_page_with_requests(url):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         response = session.get(url, headers=headers, timeout=8, allow_redirects=True)
-        response.raise_for_status()
+        # response.raise_for_status()
 
         soup = BeautifulSoup(response.text, "html.parser")
         text, detail = extract_relevant_text_from_soup(soup)
@@ -257,7 +258,7 @@ def scrape_page_with_requests(url):
 
 
 # =========================
-# PLAYWRIGHT FALLBACK
+# PLAYWRIGHT SCRAPER FALLBACK
 # =========================
 async def scrape_with_playwright(url):
     try:
@@ -285,7 +286,7 @@ async def scrape_with_playwright(url):
 # =========================
 # SITE SCRAPER
 # =========================
-async def scrape_site(url, force_subpages=False):
+async def scrape_site(url, second_pass=False):
     collected_texts = []
     methods = []
     source_urls = []
@@ -299,9 +300,9 @@ async def scrape_site(url, force_subpages=False):
         source_urls.append(homepage_source)
 
     # 2) useful internal links if homepage weak or if second-pass forces it
-    should_try_subpages = force_subpages or (not homepage_text) or (len(homepage_text) < 150)
+    # should_try_subpages = second_pass or (not homepage_text) or (len(homepage_text) < 150)
 
-    if homepage_soup is not None and should_try_subpages:
+    if homepage_soup is not None and second_pass:
         candidate_links = extract_candidate_links(url, homepage_soup, max_links=3)
 
         for link in candidate_links:
@@ -318,9 +319,9 @@ async def scrape_site(url, force_subpages=False):
                 methods.append(sub_method)
                 source_urls.append(sub_source)
 
-    # 3) homepage Playwright fallback if still weak
+    # 3) homepage Playwright fallback for second pass
     total_text = "\n\n".join(collected_texts).strip()
-    if not total_text or len(total_text) < 150:
+    if (not total_text or len(total_text) < 150) and second_pass:
         pw_text, pw_method = await scrape_with_playwright(url)
         if pw_text:
             collected_texts.append(f"[source: {url}]\n{pw_text}")
@@ -345,27 +346,34 @@ async def scrape_site(url, force_subpages=False):
 # =========================
 # FIRST SCRAPE PASS
 # =========================
-async def process_dataframe(df):
+async def scrape_site_requests_only(url):
+    return await asyncio.to_thread(scrape_page_with_requests, url)
+
+async def first_pass_requests(df, batch_size=25):
     scraped_texts = []
     scrape_methods = []
     source_urls = []
 
-    total = len(df)
-    for i, url in enumerate(df["Website"], start=1):
-        text, method, source = await scrape_site(url, force_subpages=False)
-        scraped_texts.append(text)
-        scrape_methods.append(method)
-        source_urls.append(source)
+    urls = df["Website"].tolist()
 
-        if i % 25 == 0 or i == total:
-            print(f"Processed {i}/{total}")
+    for start in range(0, len(urls), batch_size):
+        batch = urls[start:start + batch_size]
+        tasks = [scrape_site_requests_only(url) for url in batch]
+        results = await asyncio.gather(*tasks)
+
+        for text, soup, method, source in results:
+            scraped_texts.append(text)
+            scrape_methods.append(method)
+            source_urls.append(source)
+
+        print(f"Processed {min(start + batch_size, len(urls))}/{len(urls)}")
 
     df["Scraped_Text"] = scraped_texts
     df["Scrape_Method"] = scrape_methods
     df["Source_URL"] = source_urls
     return df
 
-df = await process_dataframe(df)
+df = await first_pass_requests(df, batch_size=25)
 
 # =======================
 # KEYWORD MAPS
@@ -500,7 +508,7 @@ async def second_pass_uncategorized(df):
 
     for i, idx in enumerate(to_retry, start=1):
         url = df.at[idx, "Website"]
-        new_text, new_method, new_source = await scrape_site(url, force_subpages=True)
+        new_text, new_method, new_source = await scrape_site(url, second_pass=True)
 
         if new_text and len(new_text) > len(str(df.at[idx, "Scraped_Text"])):
             df.at[idx, "Scraped_Text"] = new_text
@@ -509,9 +517,6 @@ async def second_pass_uncategorized(df):
 
             cats, kws, dbl = match_keywords(new_text, flat_keyword_map, flat_therapy_map)
             df.loc[idx, ["Categories_Predicted", "Matched_Keywords", "Double_check"]] = [cats, kws, dbl]
-
-        if i % 25 == 0 or i == len(to_retry):
-            print(f"Second pass processed {i}/{len(to_retry)}")
 
     return df
 
@@ -541,13 +546,15 @@ else:
 # =========================
 output_path = "Scraping_Results.xlsx"
 with pd.ExcelWriter(output_path, engine='openpyxl', mode='w') as writer:
-    df.to_excel(writer, sheet_name="All Data", index=False)   # use filter() to reorder and return
+    df.filter(items=["Name", "Scraped_Text", "Website", "Source_URL", "Categories", "Categories_Predicted", "Scrape_Method", "Matched_Keywords", "Double_check", "ML_Predicted"]).to_excel(
+        writer, sheet_name="Summary", index=False)
     df[df["Double_check"].notna()][["Name", "Website", "Categories_Predicted", "Matched_Keywords", "Double_check"]].to_excel(
         writer, sheet_name="Check", index=False)
     df[["Name", "Website", "Categories_Predicted", "ML_Predicted"]].to_excel(
-        writer, sheet_name="Summary", index=False)
+        writer, sheet_name="Category_Summary", index=False)
     df[df["Categories_Predicted"].isna()][["Name", "Website", "ML_Predicted"]].to_excel(
         writer, sheet_name="ML Fill-In", index=False)
+    df.to_excel(writer, sheet_name="All Data", index=False)
     
     check_website.to_excel(writer, sheet_name="Check_websites", index=False)
 
