@@ -12,6 +12,9 @@ import asyncio
 from urllib.parse import urljoin, urlparse
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from sklearn.preprocessing import MultiLabelBinarizer
+from sklearn.multiclass import OneVsRestClassifier
+from sklearn.linear_model import LogisticRegression
 
 # =========================
 # CONFIG
@@ -51,6 +54,7 @@ session.mount("https://", HTTPAdapter(max_retries=retries))
 # LOAD EXCEL
 # =========================
 df = pd.read_excel("Companies.xlsx")
+
 
 # =========================
 # URL CLEANING
@@ -245,7 +249,7 @@ def scrape_page_with_requests(url):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         response = session.get(url, headers=headers, timeout=8, allow_redirects=True)
-        # response.raise_for_status()
+        response.raise_for_status() # maybe comment out?
 
         soup = BeautifulSoup(response.text, "html.parser")
         text, detail = extract_relevant_text_from_soup(soup)
@@ -299,9 +303,7 @@ async def scrape_site(url, second_pass=False):
         methods.append(homepage_method)
         source_urls.append(homepage_source)
 
-    # 2) useful internal links if homepage weak or if second-pass forces it
-    # should_try_subpages = second_pass or (not homepage_text) or (len(homepage_text) < 150)
-
+    # 2) useful internal links if second-pass forces it
     if homepage_soup is not None and second_pass:
         candidate_links = extract_candidate_links(url, homepage_soup, max_links=3)
 
@@ -337,8 +339,8 @@ async def scrape_site(url, second_pass=False):
     final_method = unique_join(methods)
     final_sources = unique_join(source_urls)
 
-    if not final_text:
-        final_method = "all_failed"
+    # if not final_text:
+    #     final_method = "all_failed"
 
     return final_text, final_method, final_sources
 
@@ -366,14 +368,13 @@ async def first_pass_requests(df, batch_size=25):
             scrape_methods.append(method)
             source_urls.append(source)
 
-        print(f"Processed {min(start + batch_size, len(urls))}/{len(urls)}")
-
     df["Scraped_Text"] = scraped_texts
     df["Scrape_Method"] = scrape_methods
     df["Source_URL"] = source_urls
     return df
 
 df = await first_pass_requests(df, batch_size=25)
+
 
 # =======================
 # KEYWORD MAPS
@@ -504,7 +505,6 @@ async def second_pass_uncategorized(df):
     mask = df["Categories_Predicted"].isna() & df["Website"].notna()
 
     to_retry = df[mask].index.tolist()
-    print(f"Second pass rows: {len(to_retry)}")
 
     for i, idx in enumerate(to_retry, start=1):
         url = df.at[idx, "Website"]
@@ -525,21 +525,76 @@ df = await second_pass_uncategorized(df)
 # =========================
 # OPTIONAL ML FILL-IN
 # =========================
-labeled = df.dropna(subset=["Categories_Predicted"])
-if not labeled.empty:
-    vectorizer = TfidfVectorizer(max_features=1000, stop_words="english")
-    X_train = vectorizer.fit_transform(labeled["Scraped_Text"])
-    y_train = labeled["Categories_Predicted"]
-    clf = MultinomialNB()
-    clf.fit(X_train, y_train)
+def split_categories(cat_string):
+    if pd.isna(cat_string) or not isinstance(cat_string, str) or not cat_string.strip():
+        return []
+    return [c.strip() for c in cat_string.split(",") if c.strip()]
 
-    unlabeled = df[df["Categories_Predicted"].isna()]
-    X_test = vectorizer.transform(unlabeled["Scraped_Text"])
-    y_pred = clf.predict(X_test)
+# Use only rows with real scraped text and keyword-derived labels
+labeled = df[
+    df["Categories_Predicted"].notna() &
+    df["Scraped_Text"].notna() &
+    (df["Scraped_Text"].str.strip() != "")
+].copy()
 
-    df.loc[unlabeled.index, "ML_Predicted"] = y_pred
+# Only try ML on rows with text but no rule-based categories
+unlabeled = df[
+    df["Categories_Predicted"].isna() &
+    df["Scraped_Text"].notna() &
+    (df["Scraped_Text"].str.strip() != "")
+].copy()
+
+if not labeled.empty and not unlabeled.empty:
+    labeled["Category_List"] = labeled["Categories_Predicted"].apply(split_categories)
+
+    # Remove rows with no parsed categories
+    labeled = labeled[labeled["Category_List"].map(len) > 0].copy()
+
+    if not labeled.empty:
+        vectorizer = TfidfVectorizer(max_features=5000, stop_words="english", ngram_range=(1, 2), min_df=2)
+
+        X_train = vectorizer.fit_transform(labeled["Scraped_Text"])
+
+        mlb = MultiLabelBinarizer()
+        y_train = mlb.fit_transform(labeled["Category_List"])
+
+        clf = OneVsRestClassifier(LogisticRegression(max_iter=2000, class_weight="balanced"))
+
+        clf.fit(X_train, y_train)
+
+        X_test = vectorizer.transform(unlabeled["Scraped_Text"])
+
+        # Probability scores per category
+        y_prob = clf.predict_proba(X_test)
+
+        # Threshold for assigning a category
+        threshold = 0.35
+
+        ml_pred_categories = []
+        ml_confidence = []
+
+        for probs in y_prob:
+            selected = [mlb.classes_[i] for i, p in enumerate(probs) if p >= threshold]
+
+            # If nothing passes threshold, leave blank
+            if not selected:
+                ml_pred_categories.append(np.nan)
+                ml_confidence.append(float(np.max(probs)))
+            else:
+                ml_pred_categories.append(", ".join(sorted(selected)))
+                ml_confidence.append(float(np.max(probs)))
+
+        df["ML_Predicted"] = np.nan
+        df["ML_Confidence"] = np.nan
+
+        df.loc[unlabeled.index, "ML_Predicted"] = ml_pred_categories
+        df.loc[unlabeled.index, "ML_Confidence"] = ml_confidence
+    else:
+        df["ML_Predicted"] = np.nan
+        df["ML_Confidence"] = np.nan
 else:
     df["ML_Predicted"] = np.nan
+    df["ML_Confidence"] = np.nan
 
 # =========================
 # SAVE OUTPUT
