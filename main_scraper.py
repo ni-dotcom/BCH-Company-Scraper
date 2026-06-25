@@ -264,86 +264,18 @@ def scrape_page_with_requests(url):
 # =========================
 # PLAYWRIGHT SCRAPER FALLBACK
 # =========================
-async def scrape_with_playwright(url):
+async def scrape_with_playwright_page(page, url):
     try:
-        async with PLAYWRIGHT_SEMAPHORE:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                page = await browser.new_page(user_agent="Mozilla/5.0")
+        await page.goto(url, timeout=12000, wait_until="domcontentloaded")
+        await page.wait_for_timeout(1500)
 
-                await page.goto(url, timeout=15000, wait_until="domcontentloaded")
-                await page.wait_for_timeout(2500)
-
-                html = await page.content()
-                await browser.close()
-
+        html = await page.content()
         soup = BeautifulSoup(html, "html.parser")
         text, detail = extract_relevant_text_from_soup(soup)
-
         return text, f"playwright_{detail}"
-
     except Exception as e:
         print(f"Playwright failed for {url}: {e}")
         return "", "playwright_error"
-
-
-# =========================
-# SITE SCRAPER
-# =========================
-async def scrape_site(url, second_pass=False):
-    collected_texts = []
-    methods = []
-    source_urls = []
-
-    # 1) homepage via requests
-    homepage_text, homepage_soup, homepage_method, homepage_source = scrape_page_with_requests(url)
-
-    if homepage_text:
-        collected_texts.append(homepage_text)
-        methods.append(homepage_method)
-        source_urls.append(homepage_source)
-
-    # 2) useful internal links if second-pass forces it
-    if homepage_soup is not None and second_pass:
-        candidate_links = extract_candidate_links(url, homepage_soup, max_links=3)
-
-        for link in candidate_links:
-            sub_text, _, sub_method, sub_source = scrape_page_with_requests(link)
-
-            if not sub_text or len(sub_text) < 100:
-                pw_text, pw_method = await scrape_with_playwright(link)
-                if pw_text:
-                    sub_text = pw_text
-                    sub_method = pw_method
-
-            if sub_text:
-                collected_texts.append(f"[source: {link}]\n{sub_text}")
-                methods.append(sub_method)
-                source_urls.append(sub_source)
-
-    # 3) homepage Playwright fallback for second pass
-    total_text = "\n\n".join(collected_texts).strip()
-    if (not total_text or len(total_text) < 150) and second_pass:
-        pw_text, pw_method = await scrape_with_playwright(url)
-        if pw_text:
-            collected_texts.append(f"[source: {url}]\n{pw_text}")
-            methods.append(pw_method)
-            source_urls.append(url)
-
-    # dedupe blocks
-    collected_texts = list(dict.fromkeys([t for t in collected_texts if t]))
-    methods = list(dict.fromkeys([m for m in methods if m]))
-    source_urls = list(dict.fromkeys([s for s in source_urls if s]))
-
-    final_text = "\n\n".join(collected_texts).strip()
-    final_method = unique_join(methods)
-    final_sources = unique_join(source_urls)
-
-    # if not final_text:
-    #     final_method = "all_failed"
-
-    return final_text, final_method, final_sources
-
 
 # =========================
 # FIRST SCRAPE PASS
@@ -499,24 +431,77 @@ df[["Categories_Predicted", "Matched_Keywords", "Double_check"]] = df["Scraped_T
 
 # =========================
 # OPTIONAL SECOND PASS:
-# only re-scrape uncategorized rows, forcing subpages
+# only re-scrape uncategorized rows
 # =========================
 async def second_pass_uncategorized(df):
     mask = df["Categories_Predicted"].isna() & df["Website"].notna()
+    retry_indices = df[mask].index.tolist()
 
-    to_retry = df[mask].index.tolist()
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
 
-    for i, idx in enumerate(to_retry, start=1):
-        url = df.at[idx, "Website"]
-        new_text, new_method, new_source = await scrape_site(url, second_pass=True)
+        for i, idx in enumerate(retry_indices, start=1):
+            url = df.at[idx, "Website"]
 
-        if new_text and len(new_text) > len(str(df.at[idx, "Scraped_Text"])):
-            df.at[idx, "Scraped_Text"] = new_text
-            df.at[idx, "Scrape_Method"] = f"{df.at[idx, 'Scrape_Method']}; second_pass:{new_method}"
-            df.at[idx, "Source_URL"] = new_source
+            collected_texts = []
+            methods = []
+            source_urls = []
 
-            cats, kws, dbl = match_keywords(new_text, flat_keyword_map, flat_therapy_map)
-            df.loc[idx, ["Categories_Predicted", "Matched_Keywords", "Double_check"]] = [cats, kws, dbl]
+            # 1) try subpages with requests
+            homepage_text, homepage_soup, homepage_method, homepage_source = scrape_page_with_requests(url)
+            collected_texts.append(homepage_text)
+            methods.append(homepage_method)
+            source_urls.append(homepage_source)
+
+            # 2) internal links with playwright
+            if homepage_soup is not None:
+                candidate_links = extract_candidate_links(url, homepage_soup, max_links=3)
+
+                for link in candidate_links:
+                    sub_text, _, sub_method, sub_source = scrape_page_with_requests(link)
+
+                    if not sub_text or len(sub_text) < 100:
+                        page = await browser.new_page(user_agent="Mozilla/5.0")
+                        pw_text, pw_method = await scrape_with_playwright_page(page, link)
+                        await page.close()
+
+                        if pw_text and len(pw_text) > 100:
+                            sub_text = pw_text
+                            sub_method = pw_method
+                    
+                    if sub_text:
+                        collected_texts.append(f"[source: {link}]\n{sub_text}")
+                        methods.append(sub_method)
+                        source_urls.append(sub_source)
+
+            # 3) only if still weak, try playwright on homepage
+            total_text = "\n\n".join(collected_texts).strip()
+            if (not total_text or len(total_text) < 150):
+                page = await browser.new_page(user_agent="Mozilla/5.0")
+                pw_text, pw_method = await scrape_with_playwright_page(page, url)
+                await page.close()
+
+                if pw_text:
+                    collected_texts.append(f"[source: {url}]\n{pw_text}")
+                    methods.append(pw_method)
+                    source_urls.append(url)
+
+            # dedupe
+            collected_texts = list(dict.fromkeys([t for t in collected_texts if t]))
+            methods = list(dict.fromkeys([m for m in methods if m]))
+            source_urls = list(dict.fromkeys([s for s in source_urls if s]))
+
+            final_text = "\n\n".join(collected_texts).strip()
+
+            if final_text:
+                df.at[idx, "Scraped_Text"] = final_text
+                df.at[idx, "Scrape_Method"] = f"second_pass:{unique_join(methods)}"
+                df.at[idx, "Source_URL"] = unique_join(source_urls)
+
+                cats, kws, dbl = match_keywords(final_text, flat_keyword_map, flat_therapy_map)
+                df.loc[idx, ["Categories_Predicted", "Matched_Keywords", "Double_check"]] = [cats, kws, dbl]
+
+        await browser.close()
 
     return df
 
@@ -607,7 +592,7 @@ with pd.ExcelWriter(output_path, engine='openpyxl', mode='w') as writer:
         writer, sheet_name="Check", index=False)
     df[["Name", "Website", "Categories_Predicted", "ML_Predicted"]].to_excel(
         writer, sheet_name="Category_Summary", index=False)
-    df[df["Categories_Predicted"].isna()][["Name", "Website", "ML_Predicted"]].to_excel(
+    df[df["Categories_Predicted"].isna()][["Name", "Website", "Scraped_Text", "ML_Predicted"]].to_excel(
         writer, sheet_name="ML Fill-In", index=False)
     df.to_excel(writer, sheet_name="All Data", index=False)
     
