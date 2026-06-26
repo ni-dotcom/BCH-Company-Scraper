@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 import re
 from google.colab import files
-from functools import partial
 from playwright.async_api import async_playwright
 import asyncio
 from urllib.parse import urljoin, urlparse
@@ -468,7 +467,7 @@ async def second_pass_uncategorized(df):
                         if pw_text and len(pw_text) > 100:
                             sub_text = pw_text
                             sub_method = pw_method
-                    
+
                     if sub_text:
                         collected_texts.append(f"[source: {link}]\n{sub_text}")
                         methods.append(sub_method)
@@ -515,87 +514,94 @@ def split_categories(cat_string):
         return []
     return [c.strip() for c in cat_string.split(",") if c.strip()]
 
-# Use only rows with real scraped text and keyword-derived labels
-labeled = df[
-    df["Categories_Predicted"].notna() &
-    df["Scraped_Text"].notna() &
-    (df["Scraped_Text"].str.strip() != "")
-].copy()
+def ml_prediction(df):
+    # Use only rows with real scraped text and keyword-derived labels
+    labeled = df[
+        df["Categories_Predicted"].notna() &
+        df["Scraped_Text"].notna() &
+        (df["Scraped_Text"].str.strip() != "")
+    ].copy()
 
-# Only try ML on rows with text but no rule-based categories
-unlabeled = df[
-    df["Categories_Predicted"].isna() &
-    df["Scraped_Text"].notna() &
-    (df["Scraped_Text"].str.strip() != "")
-].copy()
+    # Only try ML on rows with text but no rule-based categories
+    unlabeled = df[
+        df["Categories_Predicted"].isna() &
+        df["Scraped_Text"].notna() &
+        (df["Scraped_Text"].str.strip() != "")
+    ].copy()
 
-if not labeled.empty and not unlabeled.empty:
-    labeled["Category_List"] = labeled["Categories_Predicted"].apply(split_categories)
+    if not labeled.empty and not unlabeled.empty:
+        labeled["Category_List"] = labeled["Categories_Predicted"].apply(split_categories)
 
-    # Remove rows with no parsed categories
-    labeled = labeled[labeled["Category_List"].map(len) > 0].copy()
+        # Remove rows with no parsed categories
+        labeled = labeled[labeled["Category_List"].map(len) > 0].copy()
 
-    if not labeled.empty:
-        vectorizer = TfidfVectorizer(max_features=5000, stop_words="english", ngram_range=(1, 2), min_df=2)
+        if not labeled.empty:
+            vectorizer = TfidfVectorizer(max_features=5000, stop_words="english", ngram_range=(1, 2), min_df=2)
 
-        X_train = vectorizer.fit_transform(labeled["Scraped_Text"])
+            X_train = vectorizer.fit_transform(labeled["Scraped_Text"])
 
-        mlb = MultiLabelBinarizer()
-        y_train = mlb.fit_transform(labeled["Category_List"])
+            mlb = MultiLabelBinarizer()
+            y_train = mlb.fit_transform(labeled["Category_List"])
 
-        clf = OneVsRestClassifier(LogisticRegression(max_iter=2000, class_weight="balanced"))
+            clf = OneVsRestClassifier(LogisticRegression(max_iter=2000, class_weight="balanced"))
 
-        clf.fit(X_train, y_train)
+            clf.fit(X_train, y_train)
 
-        X_test = vectorizer.transform(unlabeled["Scraped_Text"])
+            X_test = vectorizer.transform(unlabeled["Scraped_Text"])
 
-        # Probability scores per category
-        y_prob = clf.predict_proba(X_test)
+            # Probability scores per category
+            y_prob = clf.predict_proba(X_test)
 
-        # Threshold for assigning a category
-        threshold = 0.35
+            # Threshold for assigning a category
+            threshold = 0.35
 
-        ml_pred_categories = []
-        ml_confidence = []
+            ml_pred_categories = []
+            ml_confidence = []
 
-        for probs in y_prob:
-            selected = [mlb.classes_[i] for i, p in enumerate(probs) if p >= threshold]
+            for probs in y_prob:
+                selected = [mlb.classes_[i] for i, p in enumerate(probs) if p >= threshold]
 
-            # If nothing passes threshold, leave blank
-            if not selected:
-                ml_pred_categories.append(np.nan)
-                ml_confidence.append(float(np.max(probs)))
-            else:
-                ml_pred_categories.append(", ".join(sorted(selected)))
-                ml_confidence.append(float(np.max(probs)))
+                # If nothing passes threshold, leave blank
+                if not selected:
+                    ml_pred_categories.append(np.nan)
+                    ml_confidence.append(float(np.max(probs)))
+                else:
+                    ml_pred_categories.append(", ".join(sorted(selected)))
+                    ml_confidence.append(float(np.max(probs)))
 
-        df["ML_Predicted"] = np.nan
-        df["ML_Confidence"] = np.nan
+            df["ML_Predicted"] = np.nan
+            df["ML_Confidence"] = np.nan
 
-        df.loc[unlabeled.index, "ML_Predicted"] = ml_pred_categories
-        df.loc[unlabeled.index, "ML_Confidence"] = ml_confidence
+            df.loc[unlabeled.index, "ML_Predicted"] = ml_pred_categories
+            df.loc[unlabeled.index, "ML_Confidence"] = ml_confidence
+        else:
+            df["ML_Predicted"] = np.nan
+            df["ML_Confidence"] = np.nan
     else:
         df["ML_Predicted"] = np.nan
         df["ML_Confidence"] = np.nan
-else:
-    df["ML_Predicted"] = np.nan
-    df["ML_Confidence"] = np.nan
+
+    return df
+
+df = ml_prediction(df)
 
 # =========================
 # SAVE OUTPUT
 # =========================
+uncategorized = df[df["Categories_Predicted"].isna() & df["ML_Predicted"].isna()].copy()
+
 output_path = "Scraping_Results.xlsx"
 with pd.ExcelWriter(output_path, engine='openpyxl', mode='w') as writer:
-    df.filter(items=["Name", "Scraped_Text", "Website", "Source_URL", "Categories", "Categories_Predicted", "Scrape_Method", "Matched_Keywords", "Double_check", "ML_Predicted"]).to_excel(
+    df.filter(items=["Name", "Scraped_Text", "Website", "Source_URL", "Categories", "Categories_Predicted", "Scrape_Method", "Matched_Keywords", "Double_check", "ML_Predicted", "ML_Confidence"]).to_excel(
         writer, sheet_name="Summary", index=False)
-    df[df["Double_check"].notna()][["Name", "Website", "Categories_Predicted", "Matched_Keywords", "Double_check"]].to_excel(
-        writer, sheet_name="Check", index=False)
     df[["Name", "Website", "Categories_Predicted", "ML_Predicted"]].to_excel(
         writer, sheet_name="Category_Summary", index=False)
-    df[df["Categories_Predicted"].isna()][["Name", "Website", "Scraped_Text", "ML_Predicted"]].to_excel(
+    df[df["Categories_Predicted"].isna()][["Name", "Website", "Scraped_Text", "ML_Predicted", "ML_Confidence"]].to_excel(
         writer, sheet_name="ML Fill-In", index=False)
+    uncategorized[["Name", "Website", "Scraped_Text"]].to_excel(
+        writer, sheet_name="Uncategorized", index=False)
     df.to_excel(writer, sheet_name="All Data", index=False)
-    
+
     check_website.to_excel(writer, sheet_name="Check_websites", index=False)
 
 # Download in Colab
