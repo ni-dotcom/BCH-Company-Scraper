@@ -1,5 +1,6 @@
 # scrape additional companies with descriptions in excel
 # use with main_scraper.py
+
 excel = pd.read_excel("CompaniesExport.xlsx")
 
 excel["Scraped Text"] = (
@@ -40,9 +41,6 @@ if not to_scrape.empty:
     # Copy scraper outputs back by index
     excel.loc[to_scrape.index, ["Website_Scraped_Text", "Scrape_Method", "Source_URL"]] = to_scrape[["Scraped_Text", "Scrape_Method", "Source_URL"]].to_numpy()
 
-    # Clean website text after scraping
-    excel.loc[to_scrape.index, "Website_Scraped_Text"] = excel.loc[to_scrape.index, "Website_Scraped_Text"].apply(clean_text)
-
     # Categorize website text
     excel.loc[to_scrape.index, ["Web_categories", "Web_kw", "Web_check"]] = (excel.loc[to_scrape.index, "Website_Scraped_Text"]
         .apply(lambda text: pd.Series(match_keywords(text, flat_keyword_map, flat_therapy_map)))
@@ -66,6 +64,10 @@ if not needs_second_pass.empty:
 
     excel.loc[second_pass_results.index, ["Web_categories", "Web_kw", "Web_check"]] = (
         second_pass_results[["Categories_Predicted", "Matched_Keywords", "Double_check"]].to_numpy())
+
+for col in excel.columns:
+    if excel[col].dtype == 'object':
+        excel[col] = excel[col].apply(clean_text)
 
 # combine all categories found
 excel["Final_Categories"] = excel["Categories_Predicted"].combine_first(excel["Web_categories"])
