@@ -52,7 +52,7 @@ session.mount("https://", HTTPAdapter(max_retries=retries))
 # =========================
 # LOAD EXCEL
 # =========================
-df = pd.read_excel("Companies.xlsx")
+df = pd.read_excel("Companies_NeedsCategories.xlsx")
 
 
 # =========================
@@ -420,7 +420,7 @@ def match_keywords(text, general_map, therapy_map):
     keys_str = ", ".join(sorted(keys)) if keys else np.nan
     double_check = categories_str if matched and len(matched) > 3 else np.nan
 
-    return categories_str, keys_str, double_check
+    return categories_str, keys_str, double_check      
 
 # =========================
 # FIRST CATEGORIZATION PASS
@@ -507,6 +507,13 @@ async def second_pass_uncategorized(df):
 df = await second_pass_uncategorized(df)
 
 # =========================
+# REMOVE SECURITY-TRIGGERING WEBSITES
+# =========================
+# So ML model doesn't get confused
+protected = df[df["Scraped_Text"].str.contains('security service', na=False)][["Name", "Website", "Primary Key", "Scraped_Text"]]
+df = df[~df["Scraped_Text"].str.contains('security service', na=False)].copy()
+
+# =========================
 # OPTIONAL ML FILL-IN
 # =========================
 def split_categories(cat_string):
@@ -583,6 +590,7 @@ def ml_prediction(df):
 
     return df
 
+
 df = ml_prediction(df)
 
 # =========================
@@ -594,12 +602,13 @@ output_path = "Scraping_Results.xlsx"
 with pd.ExcelWriter(output_path, engine='openpyxl', mode='w') as writer:
     df.filter(items=["Name", "Scraped_Text", "Website", "Source_URL", "Categories", "Categories_Predicted", "Scrape_Method", "Matched_Keywords", "Double_check", "ML_Predicted", "ML_Confidence"]).to_excel(
         writer, sheet_name="Summary", index=False)
-    df[["Name", "Website", "Categories_Predicted", "ML_Predicted"]].to_excel(
-        writer, sheet_name="Category_Summary", index=False)
-    df[df["Categories_Predicted"].isna()][["Name", "Website", "Scraped_Text", "ML_Predicted", "ML_Confidence"]].to_excel(
+    df[["Name", "Primary Key", "Website", "Categories_Predicted"]].to_excel(
+        writer, sheet_name="Categories Scraped", index=False)
+    df[df["Categories_Predicted"].isna()][["Name", "Primary Key", "Website", "Scraped_Text", "ML_Predicted", "ML_Confidence"]].to_excel(
         writer, sheet_name="ML Fill-In", index=False)
-    uncategorized[["Name", "Website", "Scraped_Text"]].to_excel(
+    uncategorized[["Name", "Primary Key", "Website", "Scraped_Text"]].to_excel(
         writer, sheet_name="Uncategorized", index=False)
+    protected.to_excel(writer, sheet_name="Protected Websites", index=False)
     df.to_excel(writer, sheet_name="All Data", index=False)
 
     check_website.to_excel(writer, sheet_name="Check_websites", index=False)
