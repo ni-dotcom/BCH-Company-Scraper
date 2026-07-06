@@ -9,11 +9,9 @@ import json
 # CONFIG
 df = pd.read_excel("Companies_NeedsWebsites_test.xlsx")
 ddgs = DDGS(api_url="http://localhost:4479", spawn_api=True)
+
 GROQ_API_KEY = userdata.get('GROQ_API_KEY')
 TO_AVOID = [r"/blog/", r"^blog\.", r"/blogs/", r"\.blog/", r"wiki", r"pedia."]
-
-def skip_urls(url): # make this lambda
-  return any(re.search(p, url) for p in TO_AVOID)
 
 # Filter URLs through AI
 def classify_results(results, name):
@@ -27,22 +25,26 @@ def classify_results(results, name):
 booleans, same order as input, true = is a blog or is unrelated.
 Results: {json.dumps(items)}"""
 
-  chat_completion = client.chat.completions.create(
-    messages=[{"role": "user", "content": prompt,}],
-    model="llama-3.3-70b-versatile",
-  )
+  try:
+    chat_completion = client.chat.completions.create(
+      messages=[{"role": "user", "content": prompt,}],
+      model="llama-3.3-70b-versatile",
+    )
 
-  is_irrelevant = json.loads(chat_completion.choices[0].message.content)
+    is_irrelevant = json.loads(chat_completion.choices[0].message.content)
 
-  # pair together each result with its bool, and return those with False (are relevant)
-  return [r for r, irrelevant in zip(results, is_irrelevant) if not irrelevant]
+    # pair together each result with its bool, and return those with False (are relevant)
+    return [r for r, irrelevant in zip(results, is_irrelevant) if not irrelevant]
+
+  except Exception: # if API key is exceeds free limit
+    return results
 
 # Use DDG to find links
 def find_urls(name):
   if isinstance(name, str):
     try:
       results = ddgs.text(f"{name} company organization", max_results=5)  # search DDG for company name and get 5 links
-      filtered = [r for r in results if not skip_urls(r["href"])]
+      filtered = list(filter(lambda result: not any(re.search(p, result["href"]) for p in TO_AVOID), results))
 
       filtered = classify_results(filtered, name) # comment out this line to not use AI
 
@@ -70,4 +72,4 @@ with pd.ExcelWriter(output, engine='openpyxl', mode='w') as writer:
   df.to_excel(writer, sheet_name="All", index=False)
   not_found.to_excel(writer, sheet_name="Not found", index=False)
 
-files.download(output)
+# files.download(output)
