@@ -1,4 +1,4 @@
-from ddgs import DDGS
+from asyncddgs import aDDGS
 from google.colab import files, userdata
 import pandas as pd
 import requests
@@ -8,10 +8,9 @@ import json
 
 # CONFIG
 df = pd.read_excel("Companies_NeedsWebsites_test.xlsx")
-ddgs = DDGS(api_url="http://localhost:4479", spawn_api=True)
 
 GROQ_API_KEY = userdata.get('GROQ_API_KEY')
-TO_AVOID = [r"/blog/", r"^blog\.", r"/blogs/", r"\.blog/", r"wiki", r"pedia."]
+TO_AVOID = [r"/blog/", r"^blog\.", r"/blogs/", r"\.blog/", r"wiki", r"pedia."]  # urls that contain these should be avoided
 
 # Filter URLs through AI
 def classify_results(results, name):
@@ -36,34 +35,37 @@ Results: {json.dumps(items)}"""
     # pair together each result with its bool, and return those with False (are relevant)
     return [r for r, irrelevant in zip(results, is_irrelevant) if not irrelevant]
 
-  except Exception: # if API key is exceeds free limit
+  except Exception: # also if API key is exceeds free limit
     return results
 
 # Use DDG to find links
-def find_urls(name):
-  if isinstance(name, str):
+async def find_urls(names):
+  names = names.tolist()
+  urls = []
+
+  for name in names:
     try:
-      results = ddgs.text(f"{name} company organization", max_results=5)  # search DDG for company name and get 5 links
-      filtered = list(filter(lambda result: not any(re.search(p, result["href"]) for p in TO_AVOID), results))
+      async with aDDGS() as ddgs:
+        # Run a text search and limit to 5 results
+        results = await ddgs.text(f"{name} company organization", max_results=5)
 
-      filtered = classify_results(filtered, name) # comment out this line to not use AI
+        filtered = list(filter(lambda result: not any(re.search(p, result["href"]) for p in TO_AVOID), results))  # filters out results that have certain terms
 
+        filtered = classify_results(filtered, name) # comment out this line to not use AI
 
-      result = filtered[0] if filtered else None  # get first link
+        result = filtered[0] if filtered else None
 
-      print(f"{name} gives {result}")
-      url = result.get("href")
-      return url
+        print(f"{name} gives {result}")
+        url = result.get("href")
+        urls.append(url)
 
     except Exception as e:
       print(e)
       return None
-  
-  else:
-    print(f"{name} isn't a string")
-    return None
+    
+    return urls
 
-df["Website"] = df["Name"].apply(find_urls)
+df["Website"] = pd.Series(await find_urls(df["Name"]))
 not_found = df[df["Website"].isna()].copy()
 
 # Write to Excel
