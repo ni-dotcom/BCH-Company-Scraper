@@ -1,4 +1,4 @@
-from asyncddgs import aDDGS
+from ddgs import DDGS
 from google.colab import files, userdata
 import pandas as pd
 import requests
@@ -38,6 +38,10 @@ Results: {json.dumps(items)}"""
   except Exception: # also if API key is exceeds free limit
     return results
 
+def _search_sync(query, max_results=5):
+    with DDGS() as ddgs:
+        return ddgs.text(query, max_results=max_results)
+
 # Use DDG to find links
 async def find_urls(names):
   names = names.tolist()
@@ -45,25 +49,24 @@ async def find_urls(names):
 
   for name in names:
     try:
-      async with aDDGS() as ddgs:
-        # Run a text search and limit to 5 results
-        results = await ddgs.text(f"{name} company organization", max_results=5)
+      # Run a text search and limit to 5 results
+      results = await asyncio.to_thread(_search_sync, f"{name} company organization", 5)
 
-        filtered = list(filter(lambda result: not any(re.search(p, result["href"]) for p in TO_AVOID), results))  # filters out results that have certain terms
+      filtered = list(filter(lambda result: not any(re.search(p, result["href"]) for p in TO_AVOID), results))  # filters out results that have certain terms
 
-        filtered = classify_results(filtered, name) # comment out this line to not use AI
+      filtered = classify_results(filtered, name) # comment out this line to not use AI
 
-        result = filtered[0] if filtered else None
+      result = filtered[0] if filtered else None
 
-        print(f"{name} gives {result}")
-        url = result.get("href")
-        urls.append(url)
+      print(f"{name} gives {result}")
+      url = result.get("href") if result else None
+      urls.append(url)
 
     except Exception as e:
       print(e)
-      return None
+      urls.append(None)
     
-    return urls
+  return urls
 
 df["Website"] = pd.Series(await find_urls(df["Name"]))
 not_found = df[df["Website"].isna()].copy()
