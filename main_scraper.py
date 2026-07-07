@@ -52,7 +52,7 @@ session.mount("https://", HTTPAdapter(max_retries=retries))
 # =========================
 # LOAD EXCEL
 # =========================
-df = pd.read_excel("Companies_NeedsCategories.xlsx")
+df = pd.read_excel("Companies_test.xlsx")
 
 
 # =========================
@@ -407,15 +407,15 @@ def match_keywords(text, general_map, therapy_map):
     # general keyword matching
     for kw, cat in general_map.items():
         if keyword_found(text, kw):
-            matched.add(cat)
+            matched.append(cat)
             keys.add(kw)
 
     # therapy matching
     for kw, subcat in therapy_map.items():
         if keyword_found(text, kw):
-            matched.add(subcat)
+            matched.append(subcat)
             keys.add(kw)
-    
+
     # separate categories that show up more than once and are more trustable
     for cat in matched:
       if cat in maybe_cat or cat in trusty_cat:
@@ -430,15 +430,14 @@ def match_keywords(text, general_map, therapy_map):
 
     categories_str = ", ".join(sorted(trusty_cat)) if trusty_cat else np.nan
     keys_str = ", ".join(sorted(keys)) if keys else np.nan
-    double_check = categories_str if matched and len(matched) > 3 else np.nan
     maybe_categories = ", ".join(sorted(maybe_cat)) if maybe_cat else np.nan
 
-    return categories_str, keys_str, double_check, maybe_categories
+    return categories_str, keys_str, maybe_categories
 
 # =========================
 # FIRST CATEGORIZATION PASS
 # =========================
-df[["Categories_Predicted", "Matched_Keywords", "Double_check", "Possible_More_Categories"]] = df["Scraped_Text"].apply(
+df[["Categories_Predicted", "Matched_Keywords", "Possible_More_Categories"]] = df["Scraped_Text"].apply(
     lambda text: pd.Series(match_keywords(text, flat_keyword_map, flat_therapy_map)))
 
 # =========================
@@ -510,8 +509,8 @@ async def second_pass_uncategorized(df):
                 df.at[idx, "Scrape_Method"] = f"second_pass:{unique_join(methods)}"
                 df.at[idx, "Source_URL"] = unique_join(source_urls)
 
-                cats, kws, dbl, more_cats = match_keywords(final_text, flat_keyword_map, flat_therapy_map)
-                df.loc[idx, ["Categories_Predicted", "Matched_Keywords", "Double_check", "Possible_More_Categories"]] = [cats, kws, dbl, more_cats]
+                cats, kws, more_cats = match_keywords(final_text, flat_keyword_map, flat_therapy_map)
+                df.loc[idx, ["Categories_Predicted", "Matched_Keywords", "Possible_More_Categories"]] = [cats, kws, more_cats]
 
         await browser.close()
 
@@ -536,7 +535,17 @@ def split_categories(cat_string):
 
 def ml_prediction(df):
     # Read already scraped excel
-    labeled = pd.read_excel("CompaniesExport_refined.xlsx")
+    labeled = pd.read_excel("CompaniesExport_refined.xlsx", sheet_name="All Data")
+
+    labeled["Scraped_Text"] = (
+      labeled["Company type(s)"].fillna("").astype(str) + "\n" +
+      labeled["Brief description"].fillna("").astype(str) + "\n" +
+      labeled["Description"].fillna("").astype(str) + "\n" +
+      labeled["Primary therapeutic area(s)"].fillna("").astype(str) + "\n" +
+      labeled["Secondary therapeutic area(s)"].fillna("").astype(str) + "\n" +
+      labeled["Partnering objectives"].fillna("").astype(str) + "\n" +
+      labeled["Company objectives"].fillna("").astype(str)
+    )
 
     # Only try ML on rows with text but no rule-based categories
     unlabeled = df[
@@ -546,7 +555,7 @@ def ml_prediction(df):
     ].copy()
 
     if not labeled.empty and not unlabeled.empty:
-        labeled["Category_List"] = labeled["Categories_Predicted"].apply(split_categories)
+        labeled["Category_List"] = labeled["Final_Categories"].apply(split_categories)
 
         # Remove rows with no parsed categories
         labeled = labeled[labeled["Category_List"].map(len) > 0].copy()
@@ -569,7 +578,7 @@ def ml_prediction(df):
             y_prob = clf.predict_proba(X_test)
 
             # Threshold for assigning a category
-            threshold = 0.35
+            threshold = 0.50
 
             ml_pred_categories = []
             ml_confidence = []
@@ -609,7 +618,7 @@ uncategorized = df[df["Categories_Predicted"].isna() & df["Possible_More_Categor
 
 output_path = "Scraping_Results.xlsx"
 with pd.ExcelWriter(output_path, engine='openpyxl', mode='w') as writer:
-    df.filter(items=["Name", "Scraped_Text", "Website", "Source_URL", "Categories", "Categories_Predicted", "Scrape_Method", "Matched_Keywords", "Double_check", "Possible_More_Categories", "ML_Predicted", "ML_Confidence"]).to_excel(
+    df.filter(items=["Name", "Scraped_Text", "Website", "Source_URL", "Categories", "Categories_Predicted", "Matched_Keywords", "Possible_More_Categories", "ML_Predicted", "ML_Confidence"]).to_excel(
         writer, sheet_name="Summary", index=False)
     df[["Name", "Primary Key", "Website", "Categories_Predicted", "Possible_More_Categories"]].to_excel(
         writer, sheet_name="Categories Scraped", index=False)
