@@ -91,7 +91,7 @@ def clean_and_validate_url(url):
 
 df["Website"] = df["Website"].apply(clean_and_validate_url)
 check_website = df[df["Website"].str.contains('Check website: ', na=True)][["Name", "Website"]]
-# Drop rows
+# Drop rows with invalid urls
 df = df[~df["Website"].str.contains('Check website: ', na=True)].copy()
 
 
@@ -272,6 +272,7 @@ async def scrape_with_playwright_page(page, url):
         soup = BeautifulSoup(html, "html.parser")
         text, detail = extract_relevant_text_from_soup(soup)
         return text, f"playwright_{detail}"
+
     except Exception as e:
         print(f"Playwright failed for {url}: {e}")
         return "", "playwright_error"
@@ -289,6 +290,7 @@ async def first_pass_requests(df, batch_size=25):
 
     urls = df["Website"].tolist()
 
+    # run functions on a batch of urls at once to save time
     for start in range(0, len(urls), batch_size):
         batch = urls[start:start + batch_size]
         tasks = [scrape_site_requests_only(url) for url in batch]
@@ -397,7 +399,9 @@ def match_keywords(text, general_map, therapy_map):
         return np.nan, np.nan, np.nan
 
     text = text.lower()
-    matched = set()
+    matched = []
+    trusty_cat = set()
+    maybe_cat = set()
     keys = set()
 
     # general keyword matching
@@ -411,21 +415,30 @@ def match_keywords(text, general_map, therapy_map):
         if keyword_found(text, kw):
             matched.add(subcat)
             keys.add(kw)
+    
+    # separate categories that show up more than once and are more trustable
+    for cat in matched:
+      if cat in maybe_cat or cat in trusty_cat:
+        trusty_cat.add(cat)
+        maybe_cat.discard(cat)
+      else:
+        maybe_cat.add(cat)
 
     # companies that trigger both cancer and infectious diseases should just be oncology
     if "Oncology" in matched and "Infectious Disease" in matched:
         matched.remove("Infectious Disease")
 
-    categories_str = ", ".join(sorted(matched)) if matched else np.nan
+    categories_str = ", ".join(sorted(trusty_cat)) if trusty_cat else np.nan
     keys_str = ", ".join(sorted(keys)) if keys else np.nan
     double_check = categories_str if matched and len(matched) > 3 else np.nan
+    maybe_categories = ", ".join(sorted(maybe_cat)) if maybe_cat else np.nan
 
-    return categories_str, keys_str, double_check      
+    return categories_str, keys_str, double_check, maybe_categories
 
 # =========================
 # FIRST CATEGORIZATION PASS
 # =========================
-df[["Categories_Predicted", "Matched_Keywords", "Double_check"]] = df["Scraped_Text"].apply(
+df[["Categories_Predicted", "Matched_Keywords", "Double_check", "Possible_More_Categories"]] = df["Scraped_Text"].apply(
     lambda text: pd.Series(match_keywords(text, flat_keyword_map, flat_therapy_map)))
 
 # =========================
@@ -497,8 +510,8 @@ async def second_pass_uncategorized(df):
                 df.at[idx, "Scrape_Method"] = f"second_pass:{unique_join(methods)}"
                 df.at[idx, "Source_URL"] = unique_join(source_urls)
 
-                cats, kws, dbl = match_keywords(final_text, flat_keyword_map, flat_therapy_map)
-                df.loc[idx, ["Categories_Predicted", "Matched_Keywords", "Double_check"]] = [cats, kws, dbl]
+                cats, kws, dbl, more_cats = match_keywords(final_text, flat_keyword_map, flat_therapy_map)
+                df.loc[idx, ["Categories_Predicted", "Matched_Keywords", "Double_check", "Possible_More_Categories"]] = [cats, kws, dbl, more_cats]
 
         await browser.close()
 
@@ -522,12 +535,8 @@ def split_categories(cat_string):
     return [c.strip() for c in cat_string.split(",") if c.strip()]
 
 def ml_prediction(df):
-    # Use only rows with real scraped text and keyword-derived labels
-    labeled = df[
-        df["Categories_Predicted"].notna() &
-        df["Scraped_Text"].notna() &
-        (df["Scraped_Text"].str.strip() != "")
-    ].copy()
+    # Read already scraped excel
+    labeled = pd.read_excel("CompaniesExport_refined.xlsx")
 
     # Only try ML on rows with text but no rule-based categories
     unlabeled = df[
@@ -596,13 +605,13 @@ df = ml_prediction(df)
 # =========================
 # SAVE OUTPUT
 # =========================
-uncategorized = df[df["Categories_Predicted"].isna() & df["ML_Predicted"].isna()].copy()
+uncategorized = df[df["Categories_Predicted"].isna() & df["Possible_More_Categories"].isna() & df["ML_Predicted"].isna()].copy()
 
 output_path = "Scraping_Results.xlsx"
 with pd.ExcelWriter(output_path, engine='openpyxl', mode='w') as writer:
-    df.filter(items=["Name", "Scraped_Text", "Website", "Source_URL", "Categories", "Categories_Predicted", "Scrape_Method", "Matched_Keywords", "Double_check", "ML_Predicted", "ML_Confidence"]).to_excel(
+    df.filter(items=["Name", "Scraped_Text", "Website", "Source_URL", "Categories", "Categories_Predicted", "Scrape_Method", "Matched_Keywords", "Double_check", "Possible_More_Categories", "ML_Predicted", "ML_Confidence"]).to_excel(
         writer, sheet_name="Summary", index=False)
-    df[["Name", "Primary Key", "Website", "Categories_Predicted"]].to_excel(
+    df[["Name", "Primary Key", "Website", "Categories_Predicted", "Possible_More_Categories"]].to_excel(
         writer, sheet_name="Categories Scraped", index=False)
     df[df["Categories_Predicted"].isna()][["Name", "Primary Key", "Website", "Scraped_Text", "ML_Predicted", "ML_Confidence"]].to_excel(
         writer, sheet_name="ML Fill-In", index=False)
