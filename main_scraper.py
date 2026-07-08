@@ -1,11 +1,10 @@
 import requests
 from bs4 import BeautifulSoup
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.naive_bayes import MultinomialNB
 import numpy as np
 import pandas as pd
 import re
-from google.colab import files
+from google.colab import files, userdata
 from playwright.async_api import async_playwright
 import asyncio
 from urllib.parse import urljoin, urlparse
@@ -14,6 +13,8 @@ from urllib3.util.retry import Retry
 from sklearn.preprocessing import MultiLabelBinarizer
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.linear_model import LogisticRegression
+from groq import Groq
+import json
 
 # =========================
 # CONFIG
@@ -201,45 +202,45 @@ def extract_relevant_text_from_soup(soup):
                     relevant_texts.append(section_text)
                     keyword_section_found = True
 
-        # Fallback 1: If no important sections are matched by keywords, use longer p tags
-        if not keyword_section_found:
-            long_paragraphs = []
-            paragraphs = soup.find_all("p")
-            for p in paragraphs:
-                if len(long_paragraphs) >= 5: # Stop if we already found 5
+    # Fallback 1: If no important sections are matched by keywords, use longer p tags
+    if not keyword_section_found:
+        long_paragraphs = []
+        paragraphs = soup.find_all("p")
+        for p in paragraphs:
+            if len(long_paragraphs) >= 5: # Stop if we already found 5
+                break
+            para_text = p.get_text(strip=True)
+            para_text_processed = re.sub(r'\s+', ' ', para_text).lower().strip()
+            if len(para_text_processed) > 50:
+                long_paragraphs.append(para_text_processed)
+                fallback_used = True
+        relevant_texts.extend(long_paragraphs)
+
+        # Fallback 2: If p tags didn't yield enough, try longer div tags
+        if not long_paragraphs:
+            long_div_texts = []
+            div_tags = soup.find_all("div")
+            for div_tag in div_tags:
+                if len(long_div_texts) >= 5: # Stop if we already found 5
                     break
-                para_text = p.get_text(strip=True)
-                para_text_processed = re.sub(r'\s+', ' ', para_text).lower().strip()
-                if len(para_text_processed) > 50:
-                    long_paragraphs.append(para_text_processed)
+                div_text = div_tag.get_text(strip=True)
+                div_text_processed = re.sub(r'\s+', ' ', div_text).lower().strip()
+                if len(div_text_processed) > 50: # Using the same threshold for consistency
+                    long_div_texts.append(div_text_processed)
                     fallback_used = True
-            relevant_texts.extend(long_paragraphs)
+            relevant_texts.extend(long_div_texts)
 
-            # Fallback 2: If p tags didn't yield enough, try longer div tags
-            if not long_paragraphs:
-                long_div_texts = []
-                div_tags = soup.find_all("div")
-                for div_tag in div_tags:
-                    if len(long_div_texts) >= 5: # Stop if we already found 5
-                        break
-                    div_text = div_tag.get_text(strip=True)
-                    div_text_processed = re.sub(r'\s+', ' ', div_text).lower().strip()
-                    if len(div_text_processed) > 50: # Using the same threshold for consistency
-                       long_div_texts.append(div_text_processed)
-                       fallback_used = True
-                relevant_texts.extend(long_div_texts)
+    relevant_texts = list(dict.fromkeys(relevant_texts))  # De-duplicate repeated sections
+    combined = "\n".join(relevant_texts) # Construct the combined string, joining with newlines
 
-        relevant_texts = list(dict.fromkeys(relevant_texts))  # De-duplicate repeated sections
-        combined = "\n".join(relevant_texts) # Construct the combined string, joining with newlines
-
-        method_used = "empty"
-        if keyword_section_found:
-            method_used = "keyword_section"
-        elif fallback_used:
-            method_used = "fallback"
-        if meta_texts:
-            method_used = method_used + " with meta"
-        return combined, method_used
+    method_used = "empty"
+    if keyword_section_found:
+        method_used = "keyword_section"
+    elif fallback_used:
+        method_used = "fallback"
+    if meta_texts:
+        method_used = method_used + " with meta"
+    return combined, method_used
 
 # =========================
 # REQUESTS SCRAPER
@@ -248,7 +249,7 @@ def scrape_page_with_requests(url):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         response = session.get(url, headers=headers, timeout=8, allow_redirects=True)
-        response.raise_for_status() # maybe comment out?
+        response.raise_for_status()
 
         soup = BeautifulSoup(response.text, "html.parser")
         text, detail = extract_relevant_text_from_soup(soup)
@@ -375,9 +376,9 @@ therapy_subtypes = {
 
 # Flatten both maps
 flat_keyword_map = {
-    kw.lower(): cat # kw is indivudual keyword and cat is category
-    for cat, kws in category_keyword_map.items() #iterate through categories and their lists
-    for kw in kws # iterate through each keyword in list
+    kw.lower(): cat
+    for cat, kws in category_keyword_map.items() 
+    for kw in kws
 }
 # converts dicts to new dict where individual keyword from each list becomes key and category is value
 flat_therapy_map = {
@@ -528,10 +529,34 @@ df = df[~df["Scraped_Text"].str.contains('security service', na=False)].copy()
 # =========================
 # OPTIONAL ML FILL-IN
 # =========================
+GROQ_API_KEY = userdata.get('GROQ_SCRAPE_KEY')
+
 def split_categories(cat_string):
     if pd.isna(cat_string) or not isinstance(cat_string, str) or not cat_string.strip():
         return []
     return [c.strip() for c in cat_string.split(",") if c.strip()]
+
+def classify_results(name, scraped_text, cat_map, therapy_map):
+  client = Groq(api_key=GROQ_API_KEY)
+
+  prompt = f"""Based on the organization/company (name given along with some scraped text from their website), determine and predict categories that are
+representative of the organization's health-related interests. Choose 1 or more categories from the provided maps (keywords are included to help);
+the first map is for general categories and second for specific therapies if the organization happens to be involved in them.
+Respond ONLY with a string consisting of categories provided in the maps.
+General categories: {json.dumps(cat_map)}
+Therapy categories: {json.dumps(therapy_map)}
+Organizations and scraped text: {name}, {scraped_text}"""
+
+  try:
+    chat_completion = client.chat.completions.create(
+      messages=[{"role": "user", "content": prompt,}],
+      model="llama-3.3-70b-versatile",
+    )
+
+    return chat_completion.choices[0].message.content
+
+  except Exception: # also if API key is exceeds free limit
+    return np.nan
 
 def ml_prediction(df):
     # Read already scraped excel
@@ -555,6 +580,9 @@ def ml_prediction(df):
     ].copy()
 
     if not labeled.empty and not unlabeled.empty:
+        df["AI_Predicted"] = np.nan
+        df.loc[unlabeled.index, "AI_Predicted"] = unlabeled.apply(lambda x: classify_results(x["Name"], x["Scraped_Text"], category_keyword_map, therapy_subtypes), axis=1)
+
         labeled["Category_List"] = labeled["Final_Categories"].apply(split_categories)
 
         # Remove rows with no parsed categories
@@ -599,6 +627,7 @@ def ml_prediction(df):
 
             df.loc[unlabeled.index, "ML_Predicted"] = ml_pred_categories
             df.loc[unlabeled.index, "ML_Confidence"] = ml_confidence
+
         else:
             df["ML_Predicted"] = np.nan
             df["ML_Confidence"] = np.nan
@@ -608,8 +637,8 @@ def ml_prediction(df):
 
     return df
 
-
 df = ml_prediction(df)
+
 
 # =========================
 # SAVE OUTPUT
@@ -618,11 +647,11 @@ uncategorized = df[df["Categories_Predicted"].isna() & df["Possible_More_Categor
 
 output_path = "Scraping_Results.xlsx"
 with pd.ExcelWriter(output_path, engine='openpyxl', mode='w') as writer:
-    df.filter(items=["Name", "Scraped_Text", "Website", "Source_URL", "Categories", "Categories_Predicted", "Matched_Keywords", "Possible_More_Categories", "ML_Predicted", "ML_Confidence"]).to_excel(
+    df.filter(items=["Name", "Scraped_Text", "Website", "Source_URL", "Categories", "Categories_Predicted", "Matched_Keywords", "Possible_More_Categories", "ML_Predicted", "ML_Confidence", "AI_Predicted"]).to_excel(
         writer, sheet_name="Summary", index=False)
     df[["Name", "Primary Key", "Website", "Categories_Predicted", "Possible_More_Categories"]].to_excel(
         writer, sheet_name="Categories Scraped", index=False)
-    df[df["Categories_Predicted"].isna()][["Name", "Primary Key", "Website", "Scraped_Text", "ML_Predicted", "ML_Confidence"]].to_excel(
+    df[df["Categories_Predicted"].isna()][["Name", "Primary Key", "Website", "Scraped_Text", "ML_Predicted", "ML_Confidence", "AI_Predicted"]].to_excel(
         writer, sheet_name="ML Fill-In", index=False)
     uncategorized[["Name", "Primary Key", "Website", "Scraped_Text"]].to_excel(
         writer, sheet_name="Uncategorized", index=False)
