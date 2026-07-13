@@ -13,6 +13,8 @@ from urllib3.util.retry import Retry
 from sklearn.preprocessing import MultiLabelBinarizer
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.linear_model import LogisticRegression
+import unicodedata
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 
 # =========================
 # CONFIG
@@ -51,7 +53,7 @@ session.mount("https://", HTTPAdapter(max_retries=retries))
 # =========================
 # LOAD EXCEL
 # =========================
-df = pd.read_excel("Companies_test.xlsx")
+df = pd.read_excel("Companies_NeedsCategories_batch2.xlsx")
 
 
 # =========================
@@ -89,7 +91,7 @@ def clean_and_validate_url(url):
     return url
 
 df["Website"] = df["Website"].apply(clean_and_validate_url)
-check_website = df[df["Website"].str.contains('Check website: ', na=True)][["Name", "Website"]]
+check_website = df[df["Website"].str.contains('Check website: ', na=True)][["Name", "Primary Key", "Website"]]
 # Drop rows with invalid urls
 df = df[~df["Website"].str.contains('Check website: ', na=True)].copy()
 
@@ -97,14 +99,13 @@ df = df[~df["Website"].str.contains('Check website: ', na=True)].copy()
 # =========================
 # TEXT CLEANING
 # =========================
-def clean_text(text):
-    if isinstance(text, str):
-        return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text) # replaces non-printable ASCII letters with a space
+def clean_text_for_excel(text):
+    if not isinstance(text, str):
+        return text
+    text = unicodedata.normalize("NFKC", text)
+    text = ILLEGAL_CHARACTERS_RE.sub("", text)
+    text = re.sub(r'[\x7F-\x9F\uD800-\uDFFF\uFFFE\uFFFF]', '', text)
     return text
-
-for col in df.columns:
-    if df[col].dtype == 'object': # object data type indicates it contains strings or mixed types
-        df[col] = df[col].apply(clean_text)
 
 
 # =========================
@@ -230,6 +231,7 @@ def extract_relevant_text_from_soup(soup):
 
     relevant_texts = list(dict.fromkeys(relevant_texts))  # De-duplicate repeated sections
     combined = "\n".join(relevant_texts) # Construct the combined string, joining with newlines
+    combined = clean_text_for_excel(combined)
 
     method_used = "empty"
     if keyword_section_found:
@@ -319,9 +321,10 @@ category_keyword_map = {
     "Cardiovascular": ["Cardiovascular", "atherosclerosis", "myocardial ischemia"],
     "Dermatology": ["dermatology", "eczema", "psoriasis", "acne", "dermatitis", "pruritus", "skin biopsy"],
     "Endocrinology": ["Endocrine", "Endocrinology", "adrenal", "thyroid"],
+    "Epilepsy": ["epilepsy"],
     "Fetal/Newborn Medicine": ["Newborn", "Newborns", "Fetus", "Fetal", "neonatology", "prenatal diagnosis", "congenital"],
     "Gastroenterology": ["Gastroenterology", "Gastrointestinal", "celiac", "endoscopy", "Crohn's", "pancreatitis", "colonoscopy"],
-    "Hematology": ["Hematology", "anemia", "sickle cell", "hemophilia", "thrombocytopenia"],
+    "Hematology": ["Hematology", "anemia", "sickle cell", "hemophilia", "thrombocytopenia"],  # remove sickle cell?
     "Immunology": ["Immunology", "immune deficiency"],
     "Infectious Disease": ["infectious", "covid", "sars-cov-2", "antivirals", "sepsis"],
     "Metabolic": ["metabolic", "hypoglycemia", "hyperammonemia"],
@@ -334,21 +337,22 @@ category_keyword_map = {
     "Opthamology": ["Opthamology", "amblyopia", "strabismus", "glaucoma", "retina", "cornea", "fundus exam", "eye trauma"],
     "Orthopedics": ["Orthopedic", "sports injury", "ligament/ACL", "joint pain", "hip dysplasia", "physical therapy"],
     "Pulmonary": ["pulmonary", "asthma", "COPD", "cystic fibrosis", "bronchiolitis"],
+    "Radiology": ["radiology", "radiologists"],
     "Rare Diseases": ["rare disease", "orphan", "ultra-rare", "diagnostic odyssey"],
     "Reproductive Health": ["Reproductive Health", "Feminine Health", "PCOS"],
     "Surgery": ["laparoscopic"],
-    "Transplant":["Transplant", "organ allocation", "HLA matching"],
+    "Transplant":["Transplant", "organ allocation", "HLA matching"],  # remove transplant?
     "Urology": ["Urology", " UTI ", "kidney stones", "urodynamics"],
 
 
     "Biomarkers": ["Biomarkers", "surrogate endpoint", "ROC/AUC"],
-    "Diagnostics": ["diagnostic", "diagnostics", "monitoring", "lab-developed test", "clinical utility"],
+    "Diagnostics": ["diagnostic", "diagnostics", "lab-developed test", "clinical utility"],
     "Educational/Training Materials": ["Educational Materials", "Training Materials", "Training and Education", "instructional design", "curriculum"],
     "Medical Devices": ["Medical Devices", "Medical Technology", "implant", "FDA 510(k)", " PMA "],
     "Medical Equipment": ["Medical Equipment", "electrical safety"],
     "Research Tools" : ["Research Tools", "Helping Researchers", "Tools for Researchers"],
     "Animal Models": ["animal models", "mouse model", "transgenic", "xenograft"],
-    "Antibody": ["polyclonal", "lot-to-lot variability", "cross-reactivity"],
+    "Antibody": ["antibody", "polyclonal", "lot-to-lot variability", "cross-reactivity"],
     "Antigen": ["Antigen", "immunogen", "hapten", "immunogenicity", "pathogen-associated"],
     "Assay": [" PCR ", "immunoassay", "limit of detection"],
     "Bacterial Strain" :["bacterial strain", "bacteria use for research", "bacteria for research", "culture conditions", "reference strain"],
@@ -406,13 +410,15 @@ def match_keywords(text, general_map, therapy_map):
     # general keyword matching
     for kw, cat in general_map.items():
         if keyword_found(text, kw):
-            matched.append(cat)
+            count = text.count(kw)
+            matched.extend([cat] * count)
             keys.add(kw)
 
     # therapy matching
     for kw, subcat in therapy_map.items():
         if keyword_found(text, kw):
-            matched.append(subcat)
+            count = text.count(kw)
+            matched.extend([subcat] * count)
             keys.add(kw)
 
     # separate categories that show up more than once and are more trustable
@@ -425,7 +431,7 @@ def match_keywords(text, general_map, therapy_map):
 
     # companies that trigger both cancer and infectious diseases should just be oncology
     if "Oncology" in matched and "Infectious Disease" in matched:
-        matched.remove("Infectious Disease")
+        trusty_cat.discard("Infectious Disease")
 
     categories_str = ", ".join(sorted(trusty_cat)) if trusty_cat else np.nan
     keys_str = ", ".join(sorted(keys)) if keys else np.nan
@@ -614,9 +620,18 @@ df = ml_prediction(df)
 # =========================
 uncategorized = df[df["Categories_Predicted"].isna() & df["Possible_More_Categories"].isna() & df["ML_Predicted"].isna()].copy()
 
+# clean the columns for export
+for col in df.columns:
+    if df[col].dtype == 'object':
+        df[col] = df[col].apply(clean_text_for_excel)
+for temp_df in [check_website, protected, uncategorized]:
+    for col in temp_df.columns:
+        if temp_df[col].dtype == 'object':
+            temp_df[col] = temp_df[col].apply(clean_text_for_excel)
+
 output_path = "Scraping_Results.xlsx"
 with pd.ExcelWriter(output_path, engine='openpyxl', mode='w') as writer:
-    df.filter(items=["Name", "Scraped_Text", "Website", "Source_URL", "Categories", "Categories_Predicted", "Matched_Keywords", "Possible_More_Categories", "ML_Predicted", "ML_Confidence"]).to_excel(
+    df.filter(items=["Name", "Primary Key", "Scraped_Text", "Website", "Source_URL", "Categories", "Categories_Predicted", "Matched_Keywords", "Possible_More_Categories", "ML_Predicted", "ML_Confidence"]).to_excel(
         writer, sheet_name="Summary", index=False)
     df[["Name", "Primary Key", "Website", "Categories_Predicted", "Possible_More_Categories"]].to_excel(
         writer, sheet_name="Categories Scraped", index=False)
