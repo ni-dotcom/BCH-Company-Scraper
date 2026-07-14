@@ -5,6 +5,8 @@ import numpy as np
 import pandas as pd
 import re
 from google.colab import files, userdata
+from langdetect import detect
+from langdetect.lang_detect_exception import LangDetectException
 from playwright.async_api import async_playwright
 import asyncio
 from urllib.parse import urljoin, urlparse
@@ -57,8 +59,9 @@ df = pd.read_excel("Companies_NeedsCategories_batch2.xlsx")
 
 
 # =========================
-# URL CLEANING
+# INITIAL CLEANING
 # =========================
+# clean URLs
 def clean_and_validate_url(url):
     if pd.isna(url) or not isinstance(url, str):
         return np.nan # Return NaN for non-string or NaN entries
@@ -67,8 +70,6 @@ def clean_and_validate_url(url):
 
     # Check for clearly invalid URL patterns (e.g., phone numbers, "Not Found", empty strings)
     # This regex is a heuristic and might need adjustment for specific edge cases.
-    # It looks for common non-URL patterns: starts with numbers/parentheses (like phone),
-    # or common phrases like "Not Found", or if it's just whitespace.
     if re.fullmatch(r'^\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}$', url) or \
        re.fullmatch(r'^\s*(not found|n/a|none|unknown)\s*$', url, re.IGNORECASE) or \
        url == '':
@@ -91,9 +92,14 @@ def clean_and_validate_url(url):
     return url
 
 df["Website"] = df["Website"].apply(clean_and_validate_url)
-check_website = df[df["Website"].str.contains('Check website: ', na=True)][["Name", "Primary Key", "Website"]]
+
 # Drop rows with invalid urls
+check_website = df[df["Website"].str.contains('Check website: ', na=True)][["Name", "Primary Key", "Website"]]
 df = df[~df["Website"].str.contains('Check website: ', na=True)].copy()
+
+# drop rows that shouldn't be categorized (universities, hospitals)
+not_for_categorizing = df[df["Name"].str.contains("university|institute|hospital|foundation", case=False, na=True)][["Name", "Primary Key", "Website"]]
+df = df[~df["Name"].str.contains("university|institute|hospital|foundation", case=False, na=True)].copy()
 
 
 # =========================
@@ -281,6 +287,7 @@ async def scrape_with_playwright_page(page, url):
 # =========================
 # FIRST SCRAPE PASS
 # =========================
+# threading the scraping for faster results
 async def scrape_site_requests_only(url):
     return await asyncio.to_thread(scrape_page_with_requests, url)
 
@@ -298,13 +305,22 @@ async def first_pass_requests(df, batch_size=25):
         results = await asyncio.gather(*tasks)
 
         for text, soup, method, source in results:
-            scraped_texts.append(text)
-            scrape_methods.append(method)
+            # remove those not in english
+            try:
+                if detect(text) == 'en':
+                  scraped_texts.append(text)
+                  scrape_methods.append(method)
+                else:
+                  scraped_texts.append("")
+                  scrape_methods.append(method + "; check website language")
+            except LangDetectException:
+                scraped_texts.append(text)
+                scrape_methods.append(method)
             source_urls.append(source)
 
     df["Scraped_Text"] = scraped_texts
     df["Scrape_Method"] = scrape_methods
-    df["Source_URL"] = source_urls
+    df["URLs scraped"] = source_urls
     return df
 
 df = await first_pass_requests(df, batch_size=25)
@@ -324,7 +340,7 @@ category_keyword_map = {
     "Epilepsy": ["epilepsy"],
     "Fetal/Newborn Medicine": ["Newborn", "Newborns", "Fetus", "Fetal", "neonatology", "prenatal diagnosis", "congenital"],
     "Gastroenterology": ["Gastroenterology", "Gastrointestinal", "celiac", "endoscopy", "Crohn's", "pancreatitis", "colonoscopy"],
-    "Hematology": ["Hematology", "anemia", "sickle cell", "hemophilia", "thrombocytopenia"],  # remove sickle cell?
+    "Hematology": ["Hematology", "anemia", "sickle cell", "hemophilia", "thrombocytopenia"],
     "Immunology": ["Immunology", "immune deficiency"],
     "Infectious Disease": ["infectious", "covid", "sars-cov-2", "antivirals", "sepsis"],
     "Metabolic": ["metabolic", "hypoglycemia", "hyperammonemia"],
@@ -341,7 +357,7 @@ category_keyword_map = {
     "Rare Diseases": ["rare disease", "orphan", "ultra-rare", "diagnostic odyssey"],
     "Reproductive Health": ["Reproductive Health", "Feminine Health", "PCOS"],
     "Surgery": ["laparoscopic"],
-    "Transplant":["Transplant", "organ allocation", "HLA matching"],  # remove transplant?
+    "Transplant":["Transplant", "organ allocation", "HLA matching"],
     "Urology": ["Urology", " UTI ", "kidney stones", "urodynamics"],
 
 
@@ -351,13 +367,9 @@ category_keyword_map = {
     "Medical Devices": ["Medical Devices", "Medical Technology", "implant", "FDA 510(k)", " PMA "],
     "Medical Equipment": ["Medical Equipment", "electrical safety"],
     "Research Tools" : ["Research Tools", "Helping Researchers", "Tools for Researchers"],
-    "Animal Models": ["animal models", "mouse model", "transgenic", "xenograft"],
     "Antibody": ["antibody", "polyclonal", "lot-to-lot variability", "cross-reactivity"],
     "Antigen": ["Antigen", "immunogen", "hapten", "immunogenicity", "pathogen-associated"],
     "Assay": [" PCR ", "immunoassay", "limit of detection"],
-    "Bacterial Strain" :["bacterial strain", "bacteria use for research", "bacteria for research", "culture conditions", "reference strain"],
-    "Cell Line" : ["cell line", "cell lines", "CRISPR editing", "phenotype drift"],
-    "Plasmid/Vector": ["plasmid", "antibiotic resistance gene", "cloning sites", "lentiviral", "titer"],
     "Protein (Research Tool)": ["purification", "activity assay", "binding kinetics", "post-translational modifications"],
     "Software": ["interoperability"],
     "Imaging Software": ["imaging software", " DICOM", " PACS "],
@@ -442,7 +454,7 @@ def match_keywords(text, general_map, therapy_map):
 # =========================
 # FIRST CATEGORIZATION PASS
 # =========================
-df[["Categories_Predicted", "Matched_Keywords", "Possible_More_Categories"]] = df["Scraped_Text"].apply(
+df[["Categories (predicted)", "Matched_Keywords", "More Categories (less certain)"]] = df["Scraped_Text"].apply(
     lambda text: pd.Series(match_keywords(text, flat_keyword_map, flat_therapy_map)))
 
 # =========================
@@ -450,7 +462,7 @@ df[["Categories_Predicted", "Matched_Keywords", "Possible_More_Categories"]] = d
 # only re-scrape uncategorized rows
 # =========================
 async def second_pass_uncategorized(df):
-    mask = df["Categories_Predicted"].isna() & df["Website"].notna()
+    mask = df["Categories (predicted)"].isna() & df["Website"].notna() & (~df["Scrape_Method"].str.contains('check website language', na=False))
     retry_indices = df[mask].index.tolist()
 
     async with async_playwright() as p:
@@ -512,10 +524,10 @@ async def second_pass_uncategorized(df):
             if final_text:
                 df.at[idx, "Scraped_Text"] = final_text
                 df.at[idx, "Scrape_Method"] = f"second_pass:{unique_join(methods)}"
-                df.at[idx, "Source_URL"] = unique_join(source_urls)
+                df.at[idx, "URLs scraped"] = unique_join(source_urls)
 
                 cats, kws, more_cats = match_keywords(final_text, flat_keyword_map, flat_therapy_map)
-                df.loc[idx, ["Categories_Predicted", "Matched_Keywords", "Possible_More_Categories"]] = [cats, kws, more_cats]
+                df.loc[idx, ["Categories (predicted)", "Matched_Keywords", "More Categories (less certain)"]] = [cats, kws, more_cats]
 
         await browser.close()
 
@@ -554,7 +566,7 @@ def ml_prediction(df):
 
     # Only try ML on rows with text but no rule-based categories
     unlabeled = df[
-        df["Categories_Predicted"].isna() &
+        df["Categories (predicted)"].isna() &
         df["Scraped_Text"].notna() &
         (df["Scraped_Text"].str.strip() != "")
     ].copy()
@@ -618,7 +630,7 @@ df = ml_prediction(df)
 # =========================
 # SAVE OUTPUT
 # =========================
-uncategorized = df[df["Categories_Predicted"].isna() & df["Possible_More_Categories"].isna() & df["ML_Predicted"].isna()].copy()
+uncategorized = df[df["Categories (predicted)"].isna() & df["More Categories (less certain)"].isna() & df["ML_Predicted"].isna()].copy()
 
 # clean the columns for export
 for col in df.columns:
@@ -631,18 +643,21 @@ for temp_df in [check_website, protected, uncategorized]:
 
 output_path = "Scraping_Results.xlsx"
 with pd.ExcelWriter(output_path, engine='openpyxl', mode='w') as writer:
-    df.filter(items=["Name", "Primary Key", "Scraped_Text", "Website", "Source_URL", "Categories", "Categories_Predicted", "Matched_Keywords", "Possible_More_Categories", "ML_Predicted", "ML_Confidence"]).to_excel(
-        writer, sheet_name="Summary", index=False)
-    df[["Name", "Primary Key", "Website", "Categories_Predicted", "Possible_More_Categories"]].to_excel(
+    df[["Name", "Primary Key", "Website", "Categories (predicted)", "More Categories (less certain)"]].to_excel(
         writer, sheet_name="Categories Scraped", index=False)
-    df[df["Categories_Predicted"].isna()][["Name", "Primary Key", "Website", "Scraped_Text", "ML_Predicted", "ML_Confidence"]].to_excel(
+    df.filter(items=["Name", "Primary Key", "Scraped_Text", "Website", "URLs scraped", "Scrape_Method", "Categories (predicted)", "Matched_Keywords", "More Categories (less certain)", "ML_Predicted", "ML_Confidence"]).to_excel(
+        writer, sheet_name="Summary", index=False)
+    df[df["Categories (predicted)"].isna()][["Name", "Primary Key", "Website", "Scraped_Text", "ML_Predicted", "ML_Confidence"]].to_excel(
         writer, sheet_name="ML Fill-In", index=False)
+    
     uncategorized[["Name", "Primary Key", "Website", "Scraped_Text"]].to_excel(
         writer, sheet_name="Uncategorized", index=False)
     protected.to_excel(writer, sheet_name="Protected Websites", index=False)
+    check_website.to_excel(writer, sheet_name="Check Website URLs", index=False)
+    not_for_categorizing.to_excel(writer, sheet_name="Shouldn't Be Categorized", index=False)
+    
     df.to_excel(writer, sheet_name="All Data", index=False)
 
-    check_website.to_excel(writer, sheet_name="Check_websites", index=False)
 
 # Download in Colab
 files.download(output_path)
