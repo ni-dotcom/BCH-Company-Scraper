@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import re
 from google.colab import files, userdata
+from time import sleep
 from langdetect import detect
 from langdetect.lang_detect_exception import LangDetectException
 from playwright.async_api import async_playwright
@@ -26,16 +27,37 @@ PAGE_HINT_TERMS = [
     "vision", "platform", "solution", "science", "company"
 ]
 
+# for subpage navigation
 POSITIVE_LINK_TERMS = [
     "about", "company", "who-we-are", "our-story", "mission",
     "technology", "platform", "pipeline", "science", "products",
     "solutions", "research"
 ]
-
 NEGATIVE_LINK_TERMS = [
     "careers", "jobs", "news", "press", "blog", "events",
     "privacy", "terms", "legal", "contact", "support",
     "login", "investor", "cookie"
+]
+
+# for biography sections
+TITLE_ABBR = r'\b(ph\.?d|m\.?d|mba|b\.?s|m\.?s|j\.?d|rn|dds|researcher|scientist|director|officer|president|professor|physician|executive|founder|chairman|chairwoman|chairperson)\b'
+PRONOUNS = r'\b(he|she|his|her|him|they|their)\b'
+BIO_PATTERNS = [
+    r'\bis (a|an|the) (leading |senior |lead |principal |chief |founding )?[\w\- ]{0,30}(researcher|scientist|director|officer|president|professor|physician|executive|founder|chairman|chairwoman|chairperson)\b',
+    r'\bholds (a|an) (ph\.?d|m\.?d|mba|b\.?s|j\.?d)\b',
+    r'\breceived (his|her|their) (ph\.?d|m\.?d|mba|bachelor|master|degree)\b',
+    r'\b(has over|with over|brings over) \d+ years? of experience\b',
+    r'\bserves (as|on) the\b',
+    r'\bbefore (joining|founding|co-founding)\b',
+    r'\b(joined|prior to joining)\b.{0,60}\bas (a |an |the )?[A-Z][\w\- ]{2,40}\b',  # "MBA from Stanford"
+    # honorific + name at sentence start
+    r'\b(dr|prof|professor)\.?\s+[a-z]+\s+[a-z]+\b',
+    # "is chief/head/director of X" — no article
+    r'\bis (chief|head|director|vp|vice president|founder|co-founder)\s+of\b',
+    # comma-set-off role appositive — ", company's founding CSO,"
+    r",\s*[\w .&'-]{2,40}'s\s+(founding |former |current |chief )?[\w\- ]{2,30},",
+    # broader profession/identity nouns beyond corporate titles
+    r'\bis (a|an) [\w\-/]*(biochemist|biophysicist|immunologist|geneticist|neuroscientist|oncologist|cardiologist|epidemiologist|pharmacologist|biologist|chemist|engineer|physicist)\b',
 ]
 
 PLAYWRIGHT_SEMAPHORE = asyncio.Semaphore(5)  # check with higher number
@@ -55,7 +77,7 @@ session.mount("https://", HTTPAdapter(max_retries=retries))
 # =========================
 # LOAD EXCEL
 # =========================
-df = pd.read_excel("Companies_NeedsCategories_batch2.xlsx")
+df = pd.read_excel("Companies_NeedsCategories_batch3.xlsx")
 
 
 # =========================
@@ -101,7 +123,6 @@ df = df[~df["Website"].str.contains('Check website: ', na=True)].copy()
 not_for_categorizing = df[df["Name"].str.contains("university|institute|hospital|foundation", case=False, na=True)][["Name", "Primary Key", "Website"]]
 df = df[~df["Name"].str.contains("university|institute|hospital|foundation", case=False, na=True)].copy()
 
-
 # =========================
 # TEXT CLEANING
 # =========================
@@ -113,7 +134,6 @@ def clean_text_for_excel(text):
     text = re.sub(r'[\x7F-\x9F\uD800-\uDFFF\uFFFE\uFFFF]', '', text)
     return text
 
-
 # =========================
 # SCRAPING HELPERS
 # =========================
@@ -123,6 +143,17 @@ def unique_join(items, sep="; "):
         if item and item not in seen:
             seen.append(item)
     return sep.join(seen)
+
+# ignore sections that tell people's bios
+def looks_like_bio(text):
+    text_l = text.lower()
+
+    pattern_hits = sum(bool(re.search(p, text_l)) for p in BIO_PATTERNS)
+    # bios have a lot of pronouns and titles
+    pronoun_hits = len(re.findall(PRONOUNS, text_l))
+    title_hits = len(re.findall(TITLE_ABBR, text_l))
+
+    return pattern_hits >= 1 or (pronoun_hits >= 4 and title_hits >= 1)
 
 # check meta descriptions in a website for more info
 def extract_meta_descriptions(soup):
@@ -142,7 +173,7 @@ def extract_meta_descriptions(soup):
     return list(dict.fromkeys(meta_texts))
 
 # find other useful links on the homepage
-def extract_candidate_links(base_url, soup, max_links=3):
+def extract_candidate_links(base_url, soup, max_links=6):
     base_domain = urlparse(base_url).netloc.replace("www.", "")
     candidates = []
 
@@ -203,7 +234,7 @@ def extract_relevant_text_from_soup(soup):
             if parent and parent.name not in ["nav", "footer", "header"]:
                 section_text = parent.get_text(separator=" ", strip=True)
                 section_text = re.sub(r"\s+", " ", section_text).lower().strip()
-                if len(section_text) > 50:
+                if len(section_text) > 50 and not looks_like_bio(section_text):
                     relevant_texts.append(section_text)
                     keyword_section_found = True
 
@@ -216,7 +247,7 @@ def extract_relevant_text_from_soup(soup):
                 break
             para_text = p.get_text(strip=True)
             para_text_processed = re.sub(r'\s+', ' ', para_text).lower().strip()
-            if len(para_text_processed) > 50:
+            if len(para_text_processed) > 50 and not looks_like_bio(para_text_processed):
                 long_paragraphs.append(para_text_processed)
                 fallback_used = True
         relevant_texts.extend(long_paragraphs)
@@ -230,7 +261,7 @@ def extract_relevant_text_from_soup(soup):
                     break
                 div_text = div_tag.get_text(strip=True)
                 div_text_processed = re.sub(r'\s+', ' ', div_text).lower().strip()
-                if len(div_text_processed) > 50: # Using the same threshold for consistency
+                if len(div_text_processed) > 50 and not looks_like_bio(div_text_processed):
                     long_div_texts.append(div_text_processed)
                     fallback_used = True
             relevant_texts.extend(long_div_texts)
@@ -260,12 +291,12 @@ def scrape_page_with_requests(url):
         soup = BeautifulSoup(response.text, "html.parser")
         text, detail = extract_relevant_text_from_soup(soup)
 
-        return text, soup, f"requests_{detail}", url
+        candidate_links = extract_candidate_links(url, soup, max_links=6) if soup is not None else []
+        return text, soup, f"requests_{detail}", url, candidate_links
 
     except Exception as e:
         print(f"Requests error for {url}: {e}")
-        return "", None, "requests_error", url
-
+        return "", None, "requests_error", url, []
 
 # =========================
 # PLAYWRIGHT SCRAPER FALLBACK
@@ -278,19 +309,97 @@ async def scrape_with_playwright_page(page, url):
         html = await page.content()
         soup = BeautifulSoup(html, "html.parser")
         text, detail = extract_relevant_text_from_soup(soup)
-        return text, f"playwright_{detail}"
+        return text, soup, f"playwright_{detail}", url
 
     except Exception as e:
         print(f"Playwright failed for {url}: {e}")
-        return "", "playwright_error"
+        return "", None, "playwright_error", url
+
+# =========================
+# COMBINED SCRAPER
+# =========================
+async def scrape_site(browser, url, first_pass=True):
+    collected_texts = []
+    methods = []
+    source_urls = []
+
+    # requests first
+    text, soup, method, source, candidate_links = await asyncio.to_thread(scrape_page_with_requests, url)
+
+    if text:
+        collected_texts.append(text)
+    methods.append(method)
+    source_urls.append(source)
+
+    # playwright fallback for homepage if weak
+    if not text or len(text) < 50:
+        async with PLAYWRIGHT_SEMAPHORE:  #
+            page = await browser.new_page(user_agent="Mozilla/5.0")
+            try:
+                pw_text, pw_soup, pw_method, pw_source = await scrape_with_playwright_page(page, url)
+            finally:
+                await page.close()
+
+        if pw_text and len(pw_text) > len(text):
+            text = pw_text
+            soup = pw_soup
+            methods.append(pw_method)
+            source_urls.append(pw_source)
+            if collected_texts:
+                collected_texts[0] = pw_text
+            else:
+                collected_texts.append(pw_text)
+
+        # if requests had no soup, use playwright soup to get candidate links
+        if soup is None and pw_soup is not None:
+            soup = pw_soup
+            candidate_links = extract_candidate_links(url, soup, max_links=6)
+
+    # internal links
+    if candidate_links:
+        for link in candidate_links[:3] if first_pass else candidate_links[3:]: # scrape first 3 urls if first pass, otherwise last 3
+            sub_text, _, sub_method, sub_source, _ = await asyncio.to_thread(scrape_page_with_requests, link)
+
+            if not sub_text or len(sub_text) < 100:
+                async with PLAYWRIGHT_SEMAPHORE:
+                    page = await browser.new_page(user_agent="Mozilla/5.0")
+                    try:
+                        pw_sub_text, _, pw_sub_method, pw_sub_source = await scrape_with_playwright_page(page, link)
+                    finally:
+                        await page.close()
+
+                if pw_sub_text and len(pw_sub_text) > len(sub_text):
+                    sub_text = pw_sub_text
+                    sub_method = pw_sub_method
+                    sub_source = pw_sub_source
+
+            if sub_text:
+                collected_texts.append(f"[source: {link}]\n{sub_text}")
+                methods.append(sub_method)
+                source_urls.append(sub_source)
+
+    # dedupe
+    collected_texts = list(dict.fromkeys([t for t in collected_texts if t]))
+    methods = list(dict.fromkeys([m for m in methods if m]))
+    source_urls = list(dict.fromkeys([s for s in source_urls if s]))
+
+    final_text = "\n\n".join(collected_texts).strip()
+    final_method = unique_join(methods)
+    final_sources = unique_join(source_urls)
+
+    # language check
+    if final_text:
+        try:
+            if detect(final_text[:2000]) != "en":
+                return "", final_method + "; check website language", final_sources
+        except LangDetectException:
+            pass
+
+    return final_text, final_method, final_sources
 
 # =========================
 # FIRST SCRAPE PASS
 # =========================
-# threading the scraping for faster results
-async def scrape_site_requests_only(url):
-    return await asyncio.to_thread(scrape_page_with_requests, url)
-
 async def first_pass_requests(df, batch_size=25):
     scraped_texts = []
     scrape_methods = []
@@ -298,25 +407,20 @@ async def first_pass_requests(df, batch_size=25):
 
     urls = df["Website"].tolist()
 
-    # run functions on a batch of urls at once to save time
-    for start in range(0, len(urls), batch_size):
-        batch = urls[start:start + batch_size]
-        tasks = [scrape_site_requests_only(url) for url in batch]
-        results = await asyncio.gather(*tasks)
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
 
-        for text, soup, method, source in results:
-            # remove those not in english
-            try:
-                if detect(text) == 'en':
-                  scraped_texts.append(text)
-                  scrape_methods.append(method)
-                else:
-                  scraped_texts.append("")
-                  scrape_methods.append(method + "; check website language")
-            except LangDetectException:
+        for start in range(0, len(urls), batch_size):
+            batch = urls[start:start + batch_size]
+            tasks = [scrape_site(browser, url) for url in batch]
+            results = await asyncio.gather(*tasks)
+
+            for text, method, sources in results:
                 scraped_texts.append(text)
                 scrape_methods.append(method)
-            source_urls.append(source)
+                source_urls.append(sources)
+
+        await browser.close()
 
     df["Scraped_Text"] = scraped_texts
     df["Scrape_Method"] = scrape_methods
@@ -350,7 +454,7 @@ category_keyword_map = {
     "Neuroscience": ["Neuroscience", "brain circuit", "neurodevelopment", "neuroplasticity", "neurogenetics"],
     "Obesity": ["Obesity", "metabolic syndrome", "insulin resistance", "fatty liver"],
     "Oncology": ["oncology", "cancer", "tumor", "carcinoma", "chemotherapy", "leukemia", "lymphoma"],
-    "Opthamology": ["Opthamology", "amblyopia", "strabismus", "glaucoma", "retina", "cornea", "fundus exam", "eye trauma"],
+    "Opthalmology": ["Opthalmology", "amblyopia", "strabismus", "glaucoma", "retina", "cornea", "fundus exam", "eye trauma"],
     "Orthopedics": ["Orthopedic", "sports injury", "ligament/ACL", "joint pain", "hip dysplasia", "physical therapy"],
     "Pulmonary": ["pulmonary", "asthma", "COPD", "cystic fibrosis", "bronchiolitis"],
     "Radiology": ["radiology", "radiologists"],
@@ -391,7 +495,7 @@ therapy_subtypes = {
 # Flatten both maps
 flat_keyword_map = {
     kw.lower(): cat
-    for cat, kws in category_keyword_map.items() 
+    for cat, kws in category_keyword_map.items()
     for kw in kws
 }
 # converts dicts to new dict where individual keyword from each list becomes key and category is value
@@ -462,71 +566,26 @@ df[["Categories (predicted)", "Matched_Keywords", "More Categories (less certain
 # only re-scrape uncategorized rows
 # =========================
 async def second_pass_uncategorized(df):
-    mask = df["Categories (predicted)"].isna() & df["Website"].notna() & (~df["Scrape_Method"].str.contains('check website language', na=False))
+    mask = (
+        df["Categories (predicted)"].isna() &
+        df["Website"].notna() &
+        (~df["Scrape_Method"].str.contains("check website language", na=False))
+    )
     retry_indices = df[mask].index.tolist()
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
 
-        for i, idx in enumerate(retry_indices, start=1):
+        for idx in retry_indices:
             url = df.at[idx, "Website"]
+            text, method, sources = await scrape_site(browser, url, first_pass=False)
 
-            collected_texts = []
-            methods = []
-            source_urls = []
+            if text:
+                df.at[idx, "Scraped_Text"] = text
+                df.at[idx, "Scrape_Method"] = f"second_pass:{method}"
+                df.at[idx, "URLs scraped"] = sources
 
-            # 1) try subpages with requests
-            homepage_text, homepage_soup, homepage_method, homepage_source = scrape_page_with_requests(url)
-            collected_texts.append(homepage_text)
-            methods.append(homepage_method)
-            source_urls.append(homepage_source)
-
-            # 2) internal links with playwright
-            if homepage_soup is not None:
-                candidate_links = extract_candidate_links(url, homepage_soup, max_links=3)
-
-                for link in candidate_links:
-                    sub_text, _, sub_method, sub_source = scrape_page_with_requests(link)
-
-                    if not sub_text or len(sub_text) < 100:
-                        page = await browser.new_page(user_agent="Mozilla/5.0")
-                        pw_text, pw_method = await scrape_with_playwright_page(page, link)
-                        await page.close()
-
-                        if pw_text and len(pw_text) > 100:
-                            sub_text = pw_text
-                            sub_method = pw_method
-
-                    if sub_text:
-                        collected_texts.append(f"[source: {link}]\n{sub_text}")
-                        methods.append(sub_method)
-                        source_urls.append(sub_source)
-
-            # 3) only if still weak, try playwright on homepage
-            total_text = "\n\n".join(collected_texts).strip()
-            if (not total_text or len(total_text) < 150):
-                page = await browser.new_page(user_agent="Mozilla/5.0")
-                pw_text, pw_method = await scrape_with_playwright_page(page, url)
-                await page.close()
-
-                if pw_text:
-                    collected_texts.append(f"[source: {url}]\n{pw_text}")
-                    methods.append(pw_method)
-                    source_urls.append(url)
-
-            # dedupe
-            collected_texts = list(dict.fromkeys([t for t in collected_texts if t]))
-            methods = list(dict.fromkeys([m for m in methods if m]))
-            source_urls = list(dict.fromkeys([s for s in source_urls if s]))
-
-            final_text = "\n\n".join(collected_texts).strip()
-
-            if final_text:
-                df.at[idx, "Scraped_Text"] = final_text
-                df.at[idx, "Scrape_Method"] = f"second_pass:{unique_join(methods)}"
-                df.at[idx, "URLs scraped"] = unique_join(source_urls)
-
-                cats, kws, more_cats = match_keywords(final_text, flat_keyword_map, flat_therapy_map)
+                cats, kws, more_cats = match_keywords(text, flat_keyword_map, flat_therapy_map)
                 df.loc[idx, ["Categories (predicted)", "Matched_Keywords", "More Categories (less certain)"]] = [cats, kws, more_cats]
 
         await browser.close()
@@ -595,7 +654,7 @@ def ml_prediction(df):
             y_prob = clf.predict_proba(X_test)
 
             # Threshold for assigning a category
-            threshold = 0.50
+            threshold = 0.65
 
             ml_pred_categories = []
             ml_confidence = []
@@ -606,22 +665,22 @@ def ml_prediction(df):
                 # If nothing passes threshold, leave blank
                 if not selected:
                     ml_pred_categories.append(np.nan)
-                    ml_confidence.append(float(np.max(probs)))
+                    ml_confidence.append(np.nan)
                 else:
                     ml_pred_categories.append(", ".join(sorted(selected)))
                     ml_confidence.append(float(np.max(probs)))
 
-            df["ML_Predicted"] = np.nan
-            df["ML_Confidence"] = np.nan
+            df["ML Predicted"] = np.nan
+            df["ML Confidence"] = np.nan
 
-            df.loc[unlabeled.index, "ML_Predicted"] = ml_pred_categories
-            df.loc[unlabeled.index, "ML_Confidence"] = ml_confidence
+            df.loc[unlabeled.index, "ML Predicted"] = ml_pred_categories
+            df.loc[unlabeled.index, "ML Confidence"] = ml_confidence
         else:
-            df["ML_Predicted"] = np.nan
-            df["ML_Confidence"] = np.nan
+            df["ML Predicted"] = np.nan
+            df["ML Confidence"] = np.nan
     else:
-        df["ML_Predicted"] = np.nan
-        df["ML_Confidence"] = np.nan
+        df["ML Predicted"] = np.nan
+        df["ML Confidence"] = np.nan
 
     return df
 
@@ -630,7 +689,7 @@ df = ml_prediction(df)
 # =========================
 # SAVE OUTPUT
 # =========================
-uncategorized = df[df["Categories (predicted)"].isna() & df["More Categories (less certain)"].isna() & df["ML_Predicted"].isna()].copy()
+uncategorized = df[df["Categories (predicted)"].isna() & df["More Categories (less certain)"].isna() & df["ML Predicted"].isna()].copy()
 
 # clean the columns for export
 for col in df.columns:
@@ -645,17 +704,17 @@ output_path = "Scraping_Results.xlsx"
 with pd.ExcelWriter(output_path, engine='openpyxl', mode='w') as writer:
     df[["Name", "Primary Key", "Website", "Categories (predicted)", "More Categories (less certain)"]].to_excel(
         writer, sheet_name="Categories Scraped", index=False)
-    df.filter(items=["Name", "Primary Key", "Scraped_Text", "Website", "URLs scraped", "Scrape_Method", "Categories (predicted)", "Matched_Keywords", "More Categories (less certain)", "ML_Predicted", "ML_Confidence"]).to_excel(
+    df.filter(items=["Name", "Primary Key", "Scraped_Text", "Website", "URLs scraped", "Scrape_Method", "Categories (predicted)", "Matched_Keywords", "More Categories (less certain)", "ML Predicted", "ML Confidence"]).to_excel(
         writer, sheet_name="Summary", index=False)
-    df[df["Categories (predicted)"].isna()][["Name", "Primary Key", "Website", "Scraped_Text", "ML_Predicted", "ML_Confidence"]].to_excel(
+    df[df["Categories (predicted)"].isna()][["Name", "Primary Key", "Website", "Scraped_Text", "ML Predicted", "ML Confidence"]].to_excel(
         writer, sheet_name="ML Fill-In", index=False)
-    
+
     uncategorized[["Name", "Primary Key", "Website", "Scraped_Text"]].to_excel(
         writer, sheet_name="Uncategorized", index=False)
     protected.to_excel(writer, sheet_name="Protected Websites", index=False)
     check_website.to_excel(writer, sheet_name="Check Website URLs", index=False)
     not_for_categorizing.to_excel(writer, sheet_name="Shouldn't Be Categorized", index=False)
-    
+
     df.to_excel(writer, sheet_name="All Data", index=False)
 
 
