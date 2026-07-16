@@ -6,8 +6,13 @@ import re
 from groq import Groq
 import json
 
+# Finally, if the query is not even a company/organization (i.e. a person), classify it as such. Respond
+# ONLY with a JSON array of integers, where 0 represents the official website, 1 represents a tentative website, and 2 represents
+# a non-organization, in the same order as the input.
+
 # CONFIG
 df = pd.read_excel("Companies_NeedsWebsites_test.xlsx")
+ddgs = DDGS(api_url="http://localhost:4479", spawn_api=True)
 
 GROQ_API_KEY = userdata.get('GROQ_API_KEY')
 TO_AVOID = [r"/blog/", r"^blog\.", r"/blogs/", r"\.blog/", r"wiki", r"pedia."]  # urls that contain these should be avoided
@@ -16,12 +21,13 @@ TO_AVOID = [r"/blog/", r"^blog\.", r"/blogs/", r"\.blog/", r"wiki", r"pedia."]  
 def classify_results(results, name):
   client = Groq(api_key=GROQ_API_KEY)
 
-  items = [{"query": name, "i": i, "title": r["title"], "snippet": r.get("body", "")} 
+  items = [{"query": name, "i": i, "title": r["title"], "snippet": r.get("body", "")}
             for i, r in enumerate(results)]
 
-  prompt = f"""For each search result, classify if it's a personal/informal blog and/or simply unrelated to the query 
-(vs. a company or organizational website about the query). Respond with ONLY a JSON array of 
-booleans, same order as input, true = is a blog or is unrelated.
+  prompt = f"""For each search result, classify if it is the website of the company/organization that was queried. If none of
+  the website titles represent the official site of the organization, choose a tentative one that seems to have the most information about
+  the organization. Respond ONLY with a JSON array of integers, where 0 represents the official website and
+  1 represents a tentative website, in the same order as the input.
 Results: {json.dumps(items)}"""
 
   try:
@@ -30,46 +36,42 @@ Results: {json.dumps(items)}"""
       model="llama-3.3-70b-versatile",
     )
 
-    is_irrelevant = json.loads(chat_completion.choices[0].message.content)
+    classified = json.loads(chat_completion.choices[0].message.content)
+    print(classified)
 
     # pair together each result with its bool, and return those with False (are relevant)
-    return [r for r, irrelevant in zip(results, is_irrelevant) if not irrelevant]
+    official = [r for r, response in zip(results, classified) if response == 0]
+    tentative = [r for r, response in zip(results, classified) if response == 1]
+    # skip = [r for r, response in zip(results, classified) if response == 2]
+
+    return official, tentative
 
   except Exception: # also if API key is exceeds free limit
-    return results
-
-def _search_sync(query, max_results=5):
-    with DDGS() as ddgs:
-        return ddgs.text(query, max_results=max_results)
+    return [], results
 
 # Use DDG to find links
-async def find_urls(names):
-  names = names.tolist()
-  urls = []
+def find_urls(name):
+  try:
+    # Run a text search and limit to 5 results
+    results = ddgs.text(f"{name} company organization", max_results=5)
 
-  for name in names:
-    try:
-      # Run a text search and limit to 5 results
-      results = await asyncio.to_thread(_search_sync, f"{name} company organization", 5)
+    filtered = list(filter(lambda result: not any(re.search(p, result["href"]) for p in TO_AVOID), results))  # filters out results that have certain terms
 
-      filtered = list(filter(lambda result: not any(re.search(p, result["href"]) for p in TO_AVOID), results))  # filters out results that have certain terms
+    filtered, tentative = classify_results(filtered, name) # comment out this line to not use AI
 
-      filtered = classify_results(filtered, name) # comment out this line to not use AI
+    result = filtered[0] if filtered else None
 
-      result = filtered[0] if filtered else None
+    print(f"{name} gives {result}")
+    url = result.get("href") if result else None
+    more_url = tentative[0].get("href") if tentative else None
+    return url, more_url
 
-      print(f"{name} gives {result}")
-      url = result.get("href") if result else None
-      urls.append(url)
+  except Exception as e:
+    print(e)
+    return None, None
 
-    except Exception as e:
-      print(e)
-      urls.append(None)
-    
-  return urls
-
-df["Website"] = pd.Series(await find_urls(df["Name"]))
-not_found = df[df["Website"].isna()].copy()
+df[["Website", "Possible More Websites"]] = df["Name"].apply(find_urls).apply(pd.Series)
+not_found = df[df["Website"].isna() & df["Possible More Websites"].isna()].copy()
 
 # Write to Excel
 output = "Websites_given.xlsx"
