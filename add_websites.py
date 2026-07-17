@@ -24,7 +24,7 @@ def classify_results(results, name):
   the website titles represent the official site of the organization, choose a tentative one that seems to have the most information about
   the organization. Respond ONLY with a JSON array of integers, where 0 represents the official website and 1 represents a 
   tentative website, in the same order as the input. Finally, add an additional integer at the end that marks whether
-  or not the search query even represents a company/organization, where 0 means it does and 1 means a non-organization (i.e. a person).
+  or not the search query even represents a company/organization, where 0 means it does and 1 means a non-organization (i.e. a person or award).
 Results: {json.dumps(items)}"""
 
   try:
@@ -52,7 +52,8 @@ def find_urls(name):
     # Run a text search and limit to 5 results
     results = ddgs.text(f"{name} company organization", max_results=5)
 
-    filtered = list(filter(lambda result: not any(re.search(p, result["href"]) for p in TO_AVOID), results))  # filters out results that have certain terms
+    # filters out results that have certain terms
+    filtered = list(filter(lambda result: not any(re.search(p, result["href"]) for p in TO_AVOID), results))
 
     filtered, tentative, skip = classify_results(filtered, name)
 
@@ -63,7 +64,10 @@ def find_urls(name):
       url = result.get("href") if result else None
       more_url = tentative[0].get("href") if tentative else None
 
-      return url, more_url, None
+      if url:
+        return url, None, None
+      else:
+        return url, more_url, None
 
     else:
       print(f"{name} should be skipped")
@@ -73,14 +77,14 @@ def find_urls(name):
     print(e)
     return None, None, None
 
-df[["Website", "Possible More Websites", "Non-organization?"]] = df["Name"].apply(find_urls).apply(pd.Series)
-not_found = df[df["Website"].isna() & df["Possible More Websites"].isna() & df["Non-organization?"].isna()][["Name", "Primary Key", "Website", "Possible More Websites"]].copy()
+df[["Website", "Tentative Website", "Non-organization?"]] = df["Name"].apply(find_urls).apply(pd.Series)
+not_found = df[df["Website"].isna() & df["Tentative Website"].isna() & df["Non-organization?"].isna()][["Name", "Primary Key", "Website", "Tentative Website"]].copy()
 skip = df[df["Non-organization?"].notna()][["Name", "Primary Key", "Non-organization?"]].copy()
 
 # Write to Excel
 output = "Websites_given.xlsx"
 with pd.ExcelWriter(output, engine='openpyxl', mode='w') as writer:
-  df[["Name", "Primary Key", "Website", "Possible More Websites"]].to_excel(writer, sheet_name="Summary", index=False)
+  df[["Name", "Primary Key", "Website", "Tentative Website", "Non-organization?"]].to_excel(writer, sheet_name="Summary", index=False)
   not_found.to_excel(writer, sheet_name="Not found", index=False)
   skip.to_excel(writer, sheet_name="To Skip", index=False)
   df.to_excel(writer, sheet_name="All Data", index=False)
