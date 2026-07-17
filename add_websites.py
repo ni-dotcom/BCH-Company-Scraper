@@ -6,10 +6,6 @@ import re
 from groq import Groq
 import json
 
-# Finally, if the query is not even a company/organization (i.e. a person), classify it as such. Respond
-# ONLY with a JSON array of integers, where 0 represents the official website, 1 represents a tentative website, and 2 represents
-# a non-organization, in the same order as the input.
-
 # CONFIG
 df = pd.read_excel("Companies_NeedsWebsites_test.xlsx")
 ddgs = DDGS(api_url="http://localhost:4479", spawn_api=True)
@@ -26,8 +22,9 @@ def classify_results(results, name):
 
   prompt = f"""For each search result, classify if it is the website of the company/organization that was queried. If none of
   the website titles represent the official site of the organization, choose a tentative one that seems to have the most information about
-  the organization. Respond ONLY with a JSON array of integers, where 0 represents the official website and
-  1 represents a tentative website, in the same order as the input.
+  the organization. Respond ONLY with a JSON array of integers, where 0 represents the official website and 1 represents a 
+  tentative website, in the same order as the input. Finally, add an additional integer at the end that marks whether
+  or not the search query even represents a company/organization, where 0 means it does and 1 means a non-organization (i.e. a person).
 Results: {json.dumps(items)}"""
 
   try:
@@ -42,12 +39,12 @@ Results: {json.dumps(items)}"""
     # pair together each result with its bool, and return those with False (are relevant)
     official = [r for r, response in zip(results, classified) if response == 0]
     tentative = [r for r, response in zip(results, classified) if response == 1]
-    # skip = [r for r, response in zip(results, classified) if response == 2]
+    skip = True if classified[-1]==1 else False
 
-    return official, tentative
+    return official, tentative, skip
 
   except Exception: # also if API key is exceeds free limit
-    return [], results
+    return [], results, False
 
 # Use DDG to find links
 def find_urls(name):
@@ -57,26 +54,35 @@ def find_urls(name):
 
     filtered = list(filter(lambda result: not any(re.search(p, result["href"]) for p in TO_AVOID), results))  # filters out results that have certain terms
 
-    filtered, tentative = classify_results(filtered, name) # comment out this line to not use AI
+    filtered, tentative, skip = classify_results(filtered, name)
 
-    result = filtered[0] if filtered else None
+    if not skip:
+      result = filtered[0] if filtered else None
 
-    print(f"{name} gives {result}")
-    url = result.get("href") if result else None
-    more_url = tentative[0].get("href") if tentative else None
-    return url, more_url
+      print(f"{name} gives {result}")
+      url = result.get("href") if result else None
+      more_url = tentative[0].get("href") if tentative else None
+
+      return url, more_url, None
+
+    else:
+      print(f"{name} should be skipped")
+      return None, None, "Yes"
 
   except Exception as e:
     print(e)
-    return None, None
+    return None, None, None
 
-df[["Website", "Possible More Websites"]] = df["Name"].apply(find_urls).apply(pd.Series)
-not_found = df[df["Website"].isna() & df["Possible More Websites"].isna()].copy()
+df[["Website", "Possible More Websites", "Non-organization?"]] = df["Name"].apply(find_urls).apply(pd.Series)
+not_found = df[df["Website"].isna() & df["Possible More Websites"].isna() & df["Non-organization?"].isna()][["Name", "Primary Key", "Website", "Possible More Websites"]].copy()
+skip = df[df["Non-organization?"].notna()][["Name", "Primary Key", "Non-organization?"]].copy()
 
 # Write to Excel
 output = "Websites_given.xlsx"
 with pd.ExcelWriter(output, engine='openpyxl', mode='w') as writer:
-  df.to_excel(writer, sheet_name="All", index=False)
+  df[["Name", "Primary Key", "Website", "Possible More Websites"]].to_excel(writer, sheet_name="Summary", index=False)
   not_found.to_excel(writer, sheet_name="Not found", index=False)
+  skip.to_excel(writer, sheet_name="To Skip", index=False)
+  df.to_excel(writer, sheet_name="All Data", index=False)
 
-# files.download(output)
+files.download(output)
