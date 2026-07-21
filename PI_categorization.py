@@ -1,7 +1,7 @@
 from google.colab import files
 import pandas as pd
 import numpy as np
-import requests
+from curl_cffi import requests
 import re
 from ddgs import DDGS
 from bs4 import BeautifulSoup
@@ -10,15 +10,15 @@ from requests.adapters import HTTPAdapter
 
 ddgs = DDGS(api_url="http://localhost:4479", spawn_api=True)
 # requests session with retries
-session = requests.Session()
-retries = Retry(
-    total=1,
-    backoff_factor=0.5,
-    status_forcelist=[429, 500, 502, 503, 504],
-    allowed_methods=["GET", "HEAD", "OPTIONS"]
-)
-session.mount("http://", HTTPAdapter(max_retries=retries))
-session.mount("https://", HTTPAdapter(max_retries=retries))
+# session = requests.Session()
+# retries = Retry(
+#     total=1,
+#     backoff_factor=0.5,
+#     status_forcelist=[429, 500, 502, 503, 504],
+#     allowed_methods=["GET", "HEAD", "OPTIONS"]
+# )
+# session.mount("http://", HTTPAdapter(max_retries=retries))
+# session.mount("https://", HTTPAdapter(max_retries=retries))
 
 site = "site:research.childrenshospital.org"
 # RESEARCH_TERMS = [
@@ -98,12 +98,13 @@ def scrape_publications(urls):
     if not urls:
       raise Exception("no publication urls found")
     for url in urls:
-      headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9',
-}
-      response = session.get(url, headers=headers, timeout=8, allow_redirects=True)
+#       headers = {
+#     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+#     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+#     'Accept-Language': 'en-US,en;q=0.9',
+# }
+      print(url)
+      response = session.get(url, impersonate="chrome")
       response.raise_for_status()
 
       soup = BeautifulSoup(response.text, "html.parser")
@@ -140,6 +141,10 @@ def scrape_publications(urls):
     print(e)
     return None, None, None
 
+def fix_url(url):
+  if url.startswith('http://'):
+    return url.replace("http://", "https://")
+  return url
 
 def scrape_research_overview(url):
     try:
@@ -160,8 +165,8 @@ def scrape_research_overview(url):
       for kw, cat in flat_keyword_map.items():
           if kw in research_overview:
               matched.append(cat)
-              keys.add(kw)
-      
+              keys.add(kw)   
+
       urls = []
       publications = soup.find('div', id='publications')
       print(publications)
@@ -169,9 +174,12 @@ def scrape_research_overview(url):
       for link in links:
         if any(year in link.text for year in ["2026", "2025", "2024", "2023"]):
           url = link.find('a').get("href")
-          urls.append(url)
+          urls.append(fix_url(url))
       
-      return matched, keys, urls
+      matched_str = ", ".join(sorted(matched)) if matched else np.nan
+      keys_str = ", ".join(sorted(keys)) if keys else np.nan
+      # urls_str = ", ".join(sorted(urls)) if urls else np.nan
+      return matched_str, keys_str, urls
 
     except Exception as e:
       print(e)
@@ -192,7 +200,8 @@ def find_website(name):
     return None
 
 def combine_name(first, middle, last):
-  if middle:
+  print(type(middle))
+  if middle is not np.nan:
     return first + f" {middle}" + f" {last}"
   return first + f" {last}"
 
