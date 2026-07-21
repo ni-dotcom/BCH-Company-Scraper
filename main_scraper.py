@@ -20,6 +20,11 @@ import unicodedata
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 
 # =========================
+# LOAD EXCEL
+# =========================
+df = pd.read_excel("Companies_NeedsCategories_batch2.xlsx")
+
+# =========================
 # CONFIG
 # =========================
 PAGE_HINT_TERMS = [
@@ -38,6 +43,7 @@ NEGATIVE_LINK_TERMS = [
     "privacy", "terms", "legal", "contact", "support",
     "login", "investor", "cookie"
 ]
+NEWS_CATEGORY_TERMS = ["news", "press-release", "press", "blog", "media", "in-the-news"]
 
 # for biography sections
 TITLE_ABBR = r'\b(ph\.?d|m\.?d|mba|b\.?s|m\.?s|j\.?d|rn|dds|researcher|scientist|director|officer|president|professor|physician|executive|founder|chairman|chairwoman|chairperson)\b'
@@ -60,7 +66,7 @@ BIO_PATTERNS = [
     r'\bis (a|an) [\w\-/]*(biochemist|biophysicist|immunologist|geneticist|neuroscientist|oncologist|cardiologist|epidemiologist|pharmacologist|biologist|chemist|engineer|physicist)\b',
 ]
 
-PLAYWRIGHT_SEMAPHORE = asyncio.Semaphore(5)  # check with higher number
+PLAYWRIGHT_SEMAPHORE = asyncio.Semaphore(5)
 
 # requests session with retries
 session = requests.Session()
@@ -72,13 +78,6 @@ retries = Retry(
 )
 session.mount("http://", HTTPAdapter(max_retries=retries))
 session.mount("https://", HTTPAdapter(max_retries=retries))
-
-
-# =========================
-# LOAD EXCEL
-# =========================
-df = pd.read_excel("Companies_NeedsCategories_batch3.xlsx")
-
 
 # =========================
 # INITIAL CLEANING
@@ -155,6 +154,25 @@ def looks_like_bio(text):
 
     return pattern_hits >= 1 or (pronoun_hits >= 4 and title_hits >= 1)
 
+def is_news_like_node(tag):
+    if tag is None or not tag.get("class"):
+        return False
+
+    classes = [str(c).lower() for c in tag.get("class", [])]
+
+    # exact-token match: WordPress marks individual blog/news entries this way
+    if "type-post" in classes:
+        return True
+
+    # exact-token match on category-* classes, e.g. category-in-the-news, category-press-releases
+    for c in classes:
+        if c.startswith("category-"):
+            cat_value = c[len("category-"):]
+            if any(term in cat_value for term in NEWS_CATEGORY_TERMS):
+                return True
+
+    return False
+
 # check meta descriptions in a website for more info
 def extract_meta_descriptions(soup):
     meta_texts = []
@@ -217,6 +235,11 @@ def extract_candidate_links(base_url, soup, max_links=6):
 def extract_relevant_text_from_soup(soup):
     for tag in soup(["script", "style", "noscript", "nav", "footer"]):
         tag.decompose()
+    for tag in soup.find_all(["article", "div", "li"]):
+        if tag.decomposed:
+            continue
+        if is_news_like_node(tag):
+            tag.decompose()
 
     relevant_texts = []
     keyword_section_found = False
@@ -229,7 +252,7 @@ def extract_relevant_text_from_soup(soup):
     # heading / section-based extraction
     for tag in soup.find_all(["h1", "h2", "h3", "a", "strong"]):
         tag_text = tag.get_text(" ", strip=True).lower()
-        if any(term in tag_text for term in PAGE_HINT_TERMS):
+        if any(term in tag_text for term in PAGE_HINT_TERMS) and "news" not in tag_text:
             parent = tag.find_parent()
             if parent and parent.name not in ["nav", "footer", "header"]:
                 section_text = parent.get_text(separator=" ", strip=True)
@@ -436,9 +459,11 @@ df = await first_pass_requests(df, batch_size=25)
 category_keyword_map = {
     "Allergy" : ["Allergy", "Allergies", "allergen", " IgE ", "anaphylaxis", "urticaria", "hives", "epinephrine auto-injector", "allergic"],
     "Anesthesia": ["Anesthesia", "Anesthetics", "Anesthesiology", "intubation", "analgesia", "sedation", "ASA classification", "perioperative", " PACU "],
+    "Animal Health": ["Animal health", "animal illness", "vetenarians", "animal care", "pets"],
     "Autoimmune": ["autoimmune", "lupus", "rheumatoid", "autoantibodies", "multiple sclerosis"],
     "Cardiology": ["cardiology", "arrhythmia", "echocardiogram", "ECG/EKG", "pacemaker", "cardiomyopathy" ,"electrophysiology"],
     "Cardiovascular": ["Cardiovascular", "atherosclerosis", "myocardial ischemia"],
+    "Dentistry": ["dentistry"],  # more?
     "Dermatology": ["dermatology", "eczema", "psoriasis", "acne", "dermatitis", "pruritus", "skin biopsy"],
     "Endocrinology": ["Endocrine", "Endocrinology", "adrenal", "thyroid"],
     "Epilepsy": ["epilepsy"],
@@ -446,7 +471,7 @@ category_keyword_map = {
     "Gastroenterology": ["Gastroenterology", "Gastrointestinal", "celiac", "endoscopy", "Crohn's", "pancreatitis", "colonoscopy"],
     "Hematology": ["Hematology", "anemia", "sickle cell", "hemophilia", "thrombocytopenia"],
     "Immunology": ["Immunology", "immune deficiency"],
-    "Infectious Disease": ["infectious", "covid", "sars-cov-2", "antivirals", "sepsis"],
+    "Infectious Disease": ["infectious", "covid", "sars-cov-2", "antivirals", "sepsis", " HIV "],
     "Metabolic": ["metabolic", "hypoglycemia", "hyperammonemia"],
     "Nephrology": ["Nephrology", "proteinuria", "nephrotic syndrome"],
     "Neurology": ["neurology", "neuron", "epilepsy", "alzheimer", "parkinsons", "Epilepsy","psychiatry", "seizures", "neuropathy", "neuroimaging", "neuromuscular"],
@@ -459,6 +484,7 @@ category_keyword_map = {
     "Pulmonary": ["pulmonary", "asthma", "COPD", "cystic fibrosis", "bronchiolitis"],
     "Radiology": ["radiology", "radiologists"],
     "Rare Diseases": ["rare disease", "orphan", "ultra-rare", "diagnostic odyssey"],
+    "Regenerative Medicine": ["regenerative medicine", "xenotransplant", "tissue engineering", "organogenesis"],
     "Reproductive Health": ["Reproductive Health", "Feminine Health", "PCOS"],
     "Surgery": ["laparoscopic"],
     "Transplant":["Transplant", "organ allocation", "HLA matching"],
