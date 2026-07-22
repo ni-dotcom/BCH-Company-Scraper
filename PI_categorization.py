@@ -1,4 +1,4 @@
-from google.colab import files
+from google.colab import files, userdata
 import pandas as pd
 import numpy as np
 import curl_cffi.requests
@@ -8,6 +8,7 @@ from ddgs import DDGS
 from bs4 import BeautifulSoup
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
+import lxml
 
 # pull from excel
 df = pd.read_excel("Contact_BCH_1.xlsx")
@@ -24,7 +25,10 @@ not_pi = df[df["Title"].isna()]
 df = df[df["Title"].notna()]
 
 # config
+NIH_KEY = userdata.get('NIH_API')
+
 ddgs = DDGS(api_url="http://localhost:4479", spawn_api=True)
+
 # requests session with retries
 session = requests.Session()
 retries = Retry(
@@ -116,6 +120,7 @@ def fix_url(url):
     return url.replace("http://", "https://")
   return url
 
+# scrape the "Research Overview" section of the first link that shows up
 def scrape_research_overview(url):
     try:
       headers = {"User-Agent": "Mozilla/5.0"}
@@ -154,43 +159,63 @@ def scrape_research_overview(url):
       print(e)
       return None, None, None
 
-# scrape the "Research Overview" section of the first link that shows up
+# refactor out
+def extract_pmid(url):
+    match = re.search(r'\d+$', url)
+    return match.group() if match else None
+
+def parse_article(article):
+    pmid = article.PMID.text if article.PMID else None
+    title = article.ArticleTitle.text if article.ArticleTitle else ""
+    abstract = " ".join(t.text for t in article.find_all("AbstractText"))
+    mesh_terms = [m.text for m in article.find_all("DescriptorName")]
+    author_keywords = [k.text for k in article.find_all("Keyword")]
+
+    full_text = "\n".join([title, abstract] + mesh_terms + author_keywords).lower()
+
+    return full_text
+
 def scrape_publications(urls):
   try:
     if not urls:
       raise Exception("no publication urls found")
-    for url in urls:
-      print(url)
-      response = curl_cffi.requests.get(url, impersonate="chrome")
-      response.raise_for_status()
+    
+    pmids = [extract_pmid(u) for u in urls]
+    pmids = [p for p in pmids if p]  # drop any that failed to match
+    url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+    params = {
+        "db": "pubmed",
+        "id": ",".join(pmids),
+        "retmode": "xml",
+    }
+    params["api_key"] = NIH_KEY
 
-      soup = BeautifulSoup(response.text, "html.parser")
+    r = curl_cffi.requests.post(url, params=params)
+    r.raise_for_status()
+    xml_text = r.text
 
-      scraped_text = []
+    soup = BeautifulSoup(xml_text, "xml")
 
-      article = soup.find(id='article-details')
-      if article:
-        if article.find(id='heading'):
-          article.find(id='heading').decompose()
-        text = article.get_text(separator=" ", strip=True)
-        text = re.sub(r"\s+", " ", text).lower().strip()
-        scraped_text.append(text)
+    records = [parse_article(a) for a in soup.find_all("PubmedArticle")]
+    print("pmids:", pmids)
+    print("status:", r.status_code)
+    print(xml_text[:500])
+    print("num records parsed:", len(records))
 
-      scraped_text = list(dict.fromkeys(scraped_text))  # De-duplicate repeated sections
-      combined = "\n".join(scraped_text)
+    matched = set()
+    keys = set()
 
-      matched = set()
-      keys = set()
-
+    for rec in records:
       # general keyword matching
       for kw, cat in flat_keyword_map.items():
-          if kw in combined:
-              matched.add(cat)
-              keys.add(kw)
-      
-      matched_str = ", ".join(sorted(matched)) if matched else np.nan
-      keys_str = ", ".join(sorted(keys)) if keys else np.nan
-      return matched_str, keys_str, combined
+        if kw in rec:
+          matched.add(cat)
+          keys.add(kw)
+
+    matched_str = ", ".join(sorted(matched)) if matched else np.nan
+    keys_str = ", ".join(sorted(keys)) if keys else np.nan
+    records = ", ".join(sorted(records)) if records else np.nan
+    return matched_str, keys_str, records
 
   except Exception as e:
     print(e)
