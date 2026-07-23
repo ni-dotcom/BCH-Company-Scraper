@@ -9,15 +9,18 @@ from bs4 import BeautifulSoup
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 import lxml
+from groq import Groq
+import json
+
 
 # pull from excel
 df = pd.read_excel("Contact_BCH_1.xlsx")
 
 def pull_pi(title):
   good_titles = ["professor", "researcher", "scientist", "director", "investigator", "associate", "chief", "instructor", "faculty", "attending"]
-  if any(word in title.lower() for word in good_titles):
-    return title
-  else:
+  try:
+    return title if any(word in title.lower() for word in good_titles) else None
+  except Exception:
     return None
 
 df["Title"] = df["Title"].apply(pull_pi)
@@ -26,6 +29,7 @@ df = df[df["Title"].notna()]
 
 # config
 NIH_KEY = userdata.get('NIH_API')
+GROQ_API_KEY = userdata.get('GROQ_API_KEY')
 
 ddgs = DDGS(api_url="http://localhost:4479", spawn_api=True)
 
@@ -40,7 +44,7 @@ retries = Retry(
 session.mount("http://", HTTPAdapter(max_retries=retries))
 session.mount("https://", HTTPAdapter(max_retries=retries))
 
-site = "site:research.childrenshospital.org"
+site = "site:research.childrenshospital.org/researchers"
 # RESEARCH_TERMS = [
 #     "engineer", "discover", "publish", "our-story", "mission",
 #     "technology", "platform", "pipeline", "science", "products",
@@ -77,13 +81,14 @@ category_keyword_map = {
     "Surgery": ["laparoscopic"],
     "Transplant":["Transplant", "organ allocation", "HLA matching"],
     "Urology": ["Urology", " UTI ", "kidney stones", "urodynamics"],
+
     "Biomarkers": ["Biomarkers", "surrogate endpoint", "ROC/AUC"],
     "Diagnostics": ["diagnostic", "diagnostics", "lab-developed test", "clinical utility"],
     "Educational/Training Materials": ["Educational Materials", "Training Materials", "Training and Education", "instructional design", "curriculum"],
     "Medical Devices": ["Medical Devices", "Medical Technology", "implant", "FDA 510(k)", " PMA "],
     "Medical Equipment": ["Medical Equipment", "electrical safety"],
     "Research Tools" : ["Research Tools", "Helping Researchers", "Tools for Researchers"],
-    "Antibody": ["antibody", "polyclonal", "lot-to-lot variability", "cross-reactivity"],
+    # "Antibody": ["antibody", "polyclonal", "lot-to-lot variability", "cross-reactivity"],
     "Antigen": ["Antigen", "immunogen", "hapten", "immunogenicity", "pathogen-associated"],
     "Assay": [" PCR ", "immunoassay", "limit of detection"],
     "Protein (Research Tool)": ["purification", "activity assay", "binding kinetics", "post-translational modifications"],
@@ -96,20 +101,54 @@ flat_keyword_map = {
     for kw in kws
 }
 
-def combine_name(first, middle, last):
-  if middle is not np.nan:
-    return first + f" {middle}" + f" {last}"
-  return first + f" {last}"
+def classify_results(results, name):
+  client = Groq(api_key=GROQ_API_KEY)
 
-def find_website(name):
+  items = [{"query": name, "i": i, "title": r["title"], "snippet": r.get("body", "")}
+            for i, r in enumerate(results)]
+
+  prompt = f"""For each search result, classify if it is the website of the name that was queried, or if it regards a different person or general page.
+  Respond ONLY with a JSON array of integers, where 0 means the website is of the person and 1 represents a wrong website, in the same order as the input. 
+Results: {json.dumps(items)}"""
+# make it respond only with the 0 result
+
   try:
-    result = ddgs.text(f"{name} {site}", max_results=1)
-    result = result[0].get("href")
+    chat_completion = client.chat.completions.create(
+      messages=[{"role": "user", "content": prompt,}],
+      model="llama-3.3-70b-versatile",
+    )
 
-    if "researchers" not in result:
-      raise Exception("PI not found")
+    classified = json.loads(chat_completion.choices[0].message.content)
+    print(classified)
+
+    # pair together each result with its bool, and return those with False (are relevant)
+    official = [r for r, response in zip(results, classified) if response == 0]
+    # bad = [r for r, response in zip(results, classified) if response == 1]
+
+    return official
+
+  except Exception: # also if API key is exceeds free limit
+    return []
+
+def find_website(first, middle, last):
+  try:
+    if isinstance(middle, str):
+      name = first + f" {middle}" + f" {last}"
+    else:
+      name = first + f" {last}"
     
-    return result
+    print(name)
+    results = ddgs.text(f"{name} {site}", max_results=10)
+    print(results)
+
+    best_result = classify_results(results, name)
+    if not best_result:
+      raise Exception("PI not found")
+    print(best_result)
+    best_result = best_result[0].get("href")
+    print(best_result)
+    
+    return best_result
     
   except Exception as e:
     print(e)
@@ -129,6 +168,7 @@ def scrape_research_overview(url):
 
       soup = BeautifulSoup(response.text, "html.parser")
 
+      # prevent ending code if overview doesn't exist
       research_overview = soup.find('div', id='overview').text
       research_overview = re.sub(r'\s+', ' ', research_overview).lower().strip()
       print(research_overview)
@@ -187,8 +227,8 @@ def scrape_publications(urls):
         "db": "pubmed",
         "id": ",".join(pmids),
         "retmode": "xml",
+        "api_key": NIH_KEY,
     }
-    params["api_key"] = NIH_KEY
 
     r = curl_cffi.requests.post(url, params=params)
     r.raise_for_status()
@@ -221,14 +261,19 @@ def scrape_publications(urls):
     print(e)
     return None, None, None
 
-df["Name"] = df[["First Name", "Middle Initial", "Last Name"]].apply(lambda names: combine_name(*names), axis=1)
-df["Main Website"] = df["Name"].apply(find_website)
-df[["Web_cat", "web_kw", "publication_links"]] = df["Main Website"].apply(scrape_research_overview).apply(pd.Series)
-df[["Pub_cat", "pub_kw", "pub_text"]] = df["publication_links"].apply(scrape_publications).apply(pd.Series)
+df["BCH Webpage"] = df[["First Name", "Middle Initial", "Last Name"]].apply(lambda names: find_website(*names), axis=1)
+not_found = df[df["BCH Webpage"].isna()]
+df = df[df["BCH Webpage"].notna()]
+
+df[["Categories (from BHC webpage)", "Keywords from BCH webpage", "Links to Publications"]] = df["BCH Webpage"].apply(scrape_research_overview).apply(pd.Series)
+df[["Categories (from publications)", "Publication Keywords", "Scraped Text from Publications"]] = df["Links to Publications"].apply(scrape_publications).apply(pd.Series)
 
 output = "PIs_found.xlsx"
 with pd.ExcelWriter(output, engine='openpyxl', mode='w') as writer:
-  df.to_excel(writer, sheet_name="PIs_categorized", index=False)
+  df[["First Name", "Middle Initial", "Last Name", "Department", "Categories (from BHC webpage)", "Categories (from publications)"]].to_excel(
+      writer, sheet_name="PIs Categorized (Summary)", index=False)
+  not_found.to_excel(writer, sheet_name="PI's BCH Webpage Not Found")
+  df.to_excel(writer, sheet_name="PIs Categorized (Full Data)", index=False)
   not_pi.to_excel(writer, sheet_name="Not a PI", index=False)
 
 files.download(output)
